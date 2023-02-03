@@ -1,0 +1,2161 @@
+---
+title: "Bioregion_foret"
+author: "Texier"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-packages}
+
+library(tidyverse)
+library(sf)
+library(geojsonsf)
+library(ggplot2)
+library(RColorBrewer)
+library(ade4)
+library(vegan)
+library(ggdendro)
+library(dendextend)
+library(stringr)
+library(sp)
+library(gstat)
+library(automap)
+library(ggpubr)
+library(viridis)
+library(elevatr)
+library(raster)
+library(plotsdatabase)
+library(vegan)
+library(vegan3d)
+library(ggrepel)
+library(ggspatial)
+library(stars)
+
+```
+
+
+```{r load functions}
+
+source("Data paper/functions_ens.r") # functions for computing diversity indices of the framework of Effective Number of Species (ENS) of Hurlbert diversities as developped in Dauby & Hardy 2009 Ecography paper
+
+```
+
+
+###################################################### DATA ######################################################
+# DATA
+
+```{r load data, include=FALSE}
+
+dataset <- read_csv("Data paper/dataset.csv")
+dataset_sf <- st_as_sf(x = dataset, coords = c("LongitudeDecimal", "LatitudeDecimal"), crs = 4326)
+
+RB <- read_csv("Data paper/RB.csv")
+RB_sf <- st_as_sf(x = RB, coords = c("ddlon", "ddlat"), crs = 4326)
+
+metadata_transect <- read_csv("Data paper/metadata_transect.csv")
+metadata_transect_sf <- st_as_sf(x =  metadata_transect, coords = c("ddlon", "ddlat"), crs = 4326)
+
+transect_spec <- read_csv("Data paper/transect_spec.csv")
+
+
+## Infomap bioregions
+grid <- geojson_sf("Infomap/raw maps/Specimens_georeferenced_foret_TSBC_bioregions_0.5_2_1.1_50_400.geojson")
+
+## Geographic elements for mapping
+africa <- st_read("Shapefiles paper/africapolitical.shp") # country boundaries
+africa_crop <- st_crop(africa, xmin = 8, ymin = -6.6, xmax = 19.75, ymax = 5) # crop political boundaries around study area
+studyarea <- st_read("Shapefiles paper/Study_area_max.shp", crs = 4326) # study area
+frontier <- st_intersection(africa, studyarea) # clip africa political boundaries to study area
+frontier_sa <- st_union(frontier$geometry) # frontier study area without country boundaries
+gabon <- st_read("Shapefiles paper/Delimitation_Gabon.shp", crs = 4326) # Gabon boundary
+srtm <- raster("Shapefiles paper/mn75_studyare.ovr", crs = "+init=epsg:4326")
+extent(srtm) <- extent(8.22902777778, 19.0019444444, -6.00013888889, 4.48736111111)
+refuge_Maley <- st_read("Shapefiles paper/Maley_refugia_update.shp", crs = 4326) # forest refugia in the study area according to Maley (1996); the delimitation has been adapted from Maley based on SRTM data
+refuge_Anhuf_all <- st_read("Shapefiles paper/Anhuf_all_forest_LGM_LG.shp", crs = 4326) %>%  # forest refugia according to Anhuf et al. (2006)
+  st_intersection(., frontier_sa) # keep only the part corresponding the the study area
+refuge_Anhuf_all_union <- st_read("Shapefiles paper/Anhuf_all_forest_union_LGM_LG.shp", crs = 4326) %>%  # forest refugia according to Anhuf et al. (2006)
+  st_intersection(., frontier_sa) # keep only the part corresponding the the study area
+refuge_Anhuf_evergreen <- st_read("Shapefiles paper/Anhuf_evergrenn_forest_LGM_LG.shp", crs = 4326) %>%  # evergreen forest refugia according to Anhuf et al. (2006)
+  st_intersection(., frontier_sa) # keep only the part corresponding the the study area
+refuge_Anhuf_semideciduous <- st_read("Shapefiles paper/Anhuf_semideciduous_forest_LGM_LG.shp", crs = 4326) %>%  # evergreen forest refugia according to Anhuf et al. (2006)
+  st_intersection(., frontier_sa) # keep only the part corresponding the the study area
+world <- st_read("Shapefiles paper/ne_10m_coastline.shp") # coastline
+
+
+```
+
+
+```{r Altitude in TSBC}
+
+#### Endemic species
+## Using "elevatr" package
+altitude <- as_tibble(get_elev_point(dataset_sf, prj="+proj=longlat +datum=WGS84 +no_defs", src= "aws"))
+
+range(altitude$elevation)
+
+altitude <- altitude %>% 
+  mutate(elevation = replace(elevation, elevation < 0, 0)) # remove negative value for 0 meter elevation
+
+X = 100 # interval of altitudinal representation
+
+# Frequency class altitude according to specimen data
+altitude_class_esp <- vector()
+for (i in seq(from=0, to=1099, by=X)){ # count number of different species per altitude
+  altitude_class_esp <- c(altitude_class_esp,nrow(altitude %>% filter(elevation>=i & elevation<i+X) %>% distinct(NameNoAuthors)))
+}
+altitude_class_esp <- enframe (altitude_class_esp) %>% 
+  rename(nb_esp = value) %>% 
+  dplyr::select (nb_esp)
+a <- seq(from=0, to=1100, by=X) # create class name
+name <- vector()
+for (i in 1:(length(a)-1)){
+  name <- c(name,paste(a[i],a[i+1],sep="-"))
+}
+name <- enframe (name) %>% 
+  rename(class = value)
+altitude_class_esp <- cbind (altitude_class_esp, name) %>% # combine class name and values 
+  dplyr::select(name, class, nb_esp)
+
+ggplot(data=altitude_class_esp, aes(x=reorder(class, name), y=nb_esp)) + 
+  geom_bar(stat="identity") +
+  geom_text(aes(label=nb_esp), vjust=1.3, color="white", size = 8) +
+  xlab("Altitude") +
+  ylab("Number of taxa") +
+  theme(axis.text=element_text(size=24, color ="black"), axis.title=element_text(size=26,face="bold"), axis.text.x = element_text(angle = 90, hjust = 1, vjust=0.3))
+
+# ggsave("altitudinal_distribution.png", width = 11.69, height = 8.27, dpi = 300)
+
+# Calculate altitude max, min and altitudinal amplitude per species
+range_alt <- altitude %>% 
+  group_by(NameNoAuthors) %>% 
+  summarise(min=min(elevation), max=max(elevation)) %>% 
+  mutate (range_diff=max-min) %>% 
+  arrange(-min)
+
+# Species restricted to a certain elevation
+X = 300 # elevation in m
+
+esp_X_elev <- range_alt %>% 
+  filter(max<X) # species for which distribution is not known above X m
+
+```
+
+
+```{r map datasets}
+
+temp_map <- dataset_sf %>% # create a tibble with transects and occurrences data geometry to plot it in a map with legend
+  mutate(name="Occurrences") %>% 
+  dplyr::select(geometry,name) %>% 
+  bind_rows(metadata_transect_sf %>% filter(plot_name %in% unique(transect_spec$plot_name)) %>%  mutate(name="Transects") %>% dplyr::select(geometry,name))
+
+ggplot() + # plot specimen occurrences & transects
+  geom_sf(data=temp_map, aes(shape = name, size = name, fill = name), show.legend = "point", color = "black") +
+  scale_shape_manual(values = c(21,24)) +
+  scale_size_manual(values = c(2,3)) +
+  scale_fill_manual(values = c("white", "darkgrey")) +
+  geom_sf(data=frontier, color = "black", size = 1, fill = NA) +
+  coord_sf(xlim = c(8.9, 18.6), ylim = c(-5.6, 4.1)) +
+  theme (axis.title=element_blank(), axis.text=element_text(size=13, color ="black"), legend.title=element_blank(), legend.background=element_blank(),  legend.text=element_text(size=12), legend.position=c(0.27,0.04), legend.spacing.x = unit(0.001, 'cm')) +
+  annotation_scale(pad_x = unit(0.1, "cm"), pad_y = unit(4.3, "cm"), width_hint = 0.2, height = unit(0.4, "cm")) + 
+  annotation_north_arrow(location = "bl", which_north = "true",  height = unit(2, "cm"), width = unit(2, "cm"), pad_x = unit(0.05, "cm"), pad_y = unit(4.65, "cm"), style = north_arrow_fancy_orienteering)
+
+# ggsave("Specimen_occurrences.png", width = 11.69, height = 8.27, dpi = 600)
+
+```
+
+
+
+###################################################### CENTRES OF ENDEMISM ######################################################
+# CENTRES OF ENDEMISM
+## Grid definition
+```{r grid of study area with equivalent cells, echo= FALSE}
+
+# Define grid for study area with equivalent cell areas
+CS=0.8 # size in decimal degree of cell size
+grid_sa <- st_make_grid(studyarea, n=c(diff(st_bbox(studyarea)[c(1, 3)]), diff(st_bbox(studyarea)[c(2, 4)]))/CS, square = F)
+
+# Adjust the place of cells to match mountainous refuge of Maley
+studyarea_adjust <- studyarea
+bbox_adjust <- st_bbox(c(st_bbox(studyarea)[1]+0.25,st_bbox(studyarea)[2], st_bbox(studyarea)[3], st_bbox(studyarea)[4]))
+attr(st_geometry(studyarea_adjust), "bbox") = bbox_adjust # attribute the new bbox to the sf object ([1]+0.65 et [2]-0.5 pour 0.9°)
+grid_sa <- st_make_grid(studyarea_adjust, n=c(diff(st_bbox(studyarea_adjust)[c(1, 3)]), diff(st_bbox(studyarea_adjust)[c(2, 4)]))/CS, square = F)
+
+grid_sa <- as_tibble(grid_sa) %>% # integrate numero of cell in grid
+  mutate (ID_grid = c(1:length(grid_sa))) %>% 
+  st_as_sf ()
+
+```
+
+
+## Spatial distribution
+```{r distrib RB specimens heat map, echo= FALSE}
+
+#### Heat map of number of specimen per cell
+
+RB_sf_grid <- st_intersection(RB_sf, grid_sa) # add number of grid cell to each specimen
+
+nb_spec_grid <- RB_sf_grid %>% 
+  count(ID_grid)  # count number of specimen per grid cell
+
+grid_sa_nb_spec <- left_join(as_tibble(grid_sa), dplyr::select(as_tibble(nb_spec_grid), ID_grid, n), by = "ID_grid") %>% # integrate nb of specimens per cell to the grid data
+  mutate (n = as.numeric(n)) %>% 
+  rename (n_spec_sa = n) %>% 
+  filter(!is.na(n_spec_sa)) %>% # to consider only grid cell containing at least 1 specimen
+  st_as_sf ()
+
+# Plot
+# hist(log10(grid_sa_nb_spec$n_spec_sa))
+
+ggplot() + 
+  geom_sf(data=grid_sa_nb_spec$geometry, aes(fill=grid_sa_nb_spec$n_spec_sa)) + 
+  scale_fill_viridis(direction = -1, breaks = c(2500,5000,7500,10000), limits = c(0,10000), oob = scales::squish, name = "Number", labels = c("2500","5000","7500", ">10000")) + 
+  geom_sf_label(data=grid_sa_nb_spec$geometry, aes(label = grid_sa_nb_spec$n_spec_sa)) +
+  geom_sf(data=frontier$geometry, color = "black", size = 1.5, fill = NA) + 
+  geom_sf(data=africa_crop$geometry, color = "black", size = 0.5, fill = NA) + 
+  theme (plot.title = element_text(size = 24, face = "bold"), axis.text=element_text(size=24, color ="black"), axis.title=element_blank(), legend.title=element_text(size=24, face="bold"), legend.text=element_text(size=24))
+
+# ggsave("Appendix B.png", width = 11.69, height = 8.27, dpi = 300)
+
+```
+
+
+
+```{r distrib endemic taxa heat map, echo= FALSE}
+
+#### Heat map of number of endemic species per cell
+
+# Integrate data in grid - Number of endemic species per grid cell
+dataset_sf_grid <- st_intersection(dataset_sf, grid_sa) # add number of grid cell to each specimen ; need to put point first then polygon for intersection
+
+nb_esp_end_grid <- dataset_sf_grid %>% 
+  group_by(ID_grid) %>% 
+  summarise(count_esp_end_grid =  n_distinct(NameNoAuthors)) # count number of distinct species per grid cell
+
+grid_sa_nb_esp_end <- left_join(as_tibble(grid_sa), dplyr::select(as_tibble(nb_esp_end_grid), ID_grid, count_esp_end_grid), by = "ID_grid") %>% # integrate nb of species per cell to the grid data
+  mutate (count_esp_end_grid = as.numeric(count_esp_end_grid)) %>% 
+  filter(!is.na(count_esp_end_grid)) %>% # to consider only grid cell containing at least 1 endemic specimen
+  st_as_sf ()
+
+
+# Plot
+# hist(grid_sa_nb_esp_end$count_esp_end_grid)
+
+ggplot() + 
+  geom_sf(data=grid_sa_nb_esp_end$geometry, aes(fill=grid_sa_nb_esp_end$count_esp_end_grid)) + 
+  scale_fill_viridis(direction = -1, name = "Number") + 
+  # geom_sf_label(data=grid_sa_nb_esp_end$geometry, aes(label = grid_sa_nb_esp_end$ID_grid)) +
+  geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.5, fill = NA) +
+  geom_sf(data=frontier$geometry, color = "black", size = 1.5, fill = NA) + 
+  theme (plot.title = element_text(size = 24, face = "bold"), axis.text=element_text(size=18, color ="black"), axis.title=element_blank(), legend.title=element_text(size=20, face="bold"), legend.text=element_text(size=16))
+
+```
+
+
+```{r nb of grid cell occupied by endemic taxon}
+
+end_occupied_grid <- dataset_sf_grid %>% 
+  group_by (NameNoAuthors) %>% 
+  summarise (count_grid =  n_distinct(ID_grid))
+st_geometry(end_occupied_grid) <- NULL
+
+summary(end_occupied_grid$count_grid)
+
+nb_gp <- end_occupied_grid %>% summarise (g1=sum(count_grid==1), g2=sum(count_grid>=2 & count_grid<=5), g3=sum(count_grid>5 & count_grid<=10), g4=sum(count_grid>10 & count_grid<=20), g5=sum(count_grid>20))
+gp <- tibble(Nb_spec=c("1","2-5","6-10","10-20",">20"),Nb_esp=unlist(c(nb_gp[,1:5])))
+gp <- gp %>% 
+  mutate(Perc= round(Nb_esp/sum(Nb_esp)*100,1))
+# Plot
+gp$Nb_spec <- factor (gp$Nb_spec, levels=c("1","2-5","6-10","10-20",">20")) # obliger de mettre cette donnee en facteur pour que ggplot prenne en compte cet ordre de donnees pour ploter
+ggplot(data=gp,aes(x=Nb_spec,y=Nb_esp)) + 
+  geom_bar(stat="identity") + 
+  geom_text(aes(label=paste(Perc,"%",sep="")),vjust=1.6,color="white", size = 9) + 
+  xlab("Number of occuped cells") + 
+  ylab("Number of taxa") + 
+  theme(axis.text=element_text(size=24, color ="black"), axis.title=element_text(size=24,face="bold"))
+
+# ggsave("Nb_occupied_cells.png", width = 11.69, height = 8.27, dpi = 300)
+
+```
+
+
+```{r distrib prop spec end, echo= FALSE}
+
+nb_spec_end_grid <- dataset_sf_grid %>% # count number of endemic specimen per grid cell
+  count(ID_grid)
+ 
+
+grid_sa_nb_spec_end <- left_join(as_tibble(grid_sa), dplyr::select(as_tibble(nb_spec_end_grid), ID_grid, n), by = "ID_grid") %>% # integrate nb of endemic specimen per cell to the grid data
+  mutate (n = as.numeric(n)) %>% 
+  rename (n_spec_end = n) %>% 
+  filter(n_spec_end > 1) %>% # to consider only grid cell containing at least 1 endemic specimen
+  st_as_sf ()
+
+
+X = 50 # number of minimum specimen from a cell to be considered
+grid_sa_prop_spec_end <- left_join(as_tibble(grid_sa_nb_spec_end), as_tibble(grid_sa_nb_spec), by = "ID_grid") %>% # integrate proportion of endemic specimen per cell to the grid data
+  mutate (prop_spec = (n_spec_end/n_spec_sa)*100) %>% 
+  filter (n_spec_sa > X) %>% # keep cell with at least X specimens
+  st_as_sf ()
+
+
+# Plot
+# hist(grid_sa_prop_spec_end$prop_spec)
+
+ggplot() + 
+  geom_sf(data=grid_sa_prop_spec_end$geometry.x, aes(fill=grid_sa_prop_spec_end$prop_spec)) + 
+  scale_fill_viridis(direction = -1, name = "%") +
+  geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.5, fill = NA) +
+  geom_sf(data=frontier$geometry, color = "black", size = 1.5, fill = NA) + 
+  ggtitle ("Proportion of endemic specimens per cell with more than X specimens") +
+  theme (plot.title = element_text(size = 12, face = "bold"), axis.text=element_text(size=14, color ="black"), axis.title=element_blank(), legend.title=element_text(size=20, face="bold"), legend.text=element_text(size=14))
+
+```
+
+
+
+```{r test correlation between sampling effort and endemic species and specimen richness}
+
+spec_full_grid <- grid_sa_nb_spec
+st_geometry(spec_full_grid) <- NULL
+spec_end_grid <- grid_sa_nb_spec_end
+st_geometry(spec_end_grid) <- NULL
+esp_end_grid <- grid_sa_nb_esp_end
+st_geometry(esp_end_grid) <- NULL
+
+X = 50 # minimum number of specimens in a grid cell to do test of correlation
+cor_rich_end <- left_join(spec_full_grid %>% filter(n_spec_sa>X), spec_end_grid, by="ID_grid") # keep only grid cell with at least X specimens
+cor_rich_end <- left_join(cor_rich_end, esp_end_grid, by="ID_grid")
+
+# If data follow a normal distribution we can use Pearson test to test correlation between 2 variables. Otherwise, we can use kendall or spearman tests
+#  If data don't follow normal distribution ,in the normal case, the Kendall correlation is preferred than the Spearman correlation because of a smaller gross error sensitivity (GES) (more robust) and a smaller asymptotic variance (AV) (more efficient) -> Croux, C. and Dehon, C. (2010). Influence functions of the Spearman and Kendall correlation measures. Statistical Methods and Applications, 19, 497-515.  //  rho is badly affected by small numbers of extreme outliers. And way back in the days of the 1970 SPSS manual, Nie Hull and Jenkins stated that tau was "more meaningful" when the data contained a large number of tied ranks"
+shapiro.test(cor_rich_end$n_spec_sa) # test normality of data
+shapiro.test(cor_rich_end$n_spec_end) # test normality of data
+shapiro.test(cor_rich_end$count_esp_end_grid) # test normality of data
+
+cor.test(cor_rich_end$n_spec_sa, cor_rich_end$n_spec_end, method = "kendall") # correlation test full sampling effort vs. endemic sampling effort
+cor.test(cor_rich_end$n_spec_sa, cor_rich_end$count_esp_end_grid, method = "kendall") # correlation test full sampling effort vs. endemism richness
+
+```
+
+
+
+```{r distrib prop esp end, echo= FALSE}
+
+#### Heat map of proportion of endemic species per cell
+# Number of endemic per gris cell is calculated in the previous chunk
+
+
+# Integrate data in grid - Proportion of endemic according to number of different species per grid cell
+RB_sf_grid <- st_intersection(RB_sf, grid_sa) # add number of grid cell to each specimen
+
+nb_esp_full_grid <- RB_sf_grid %>% 
+  filter (tax_esp != "###") %>% 
+  group_by(ID_grid) %>% 
+  summarise(count_esp_full_grid =  n_distinct(tax_tax)) # count number of distinct species per grid cell
+
+grid_sa_prop_esp_end <- left_join(as_tibble(grid_sa_nb_esp_end), dplyr::select(as_tibble(nb_esp_full_grid), ID_grid, count_esp_full_grid), by = "ID_grid") %>% # integrate proportion of species per cell to the grid data
+  mutate (count_esp_full_grid = as.numeric(count_esp_full_grid)) %>%
+  mutate (prop_esp = (count_esp_end_grid/count_esp_full_grid)*100) %>% 
+  st_as_sf ()
+
+X = 100
+grid_sa_prop_esp_end <- grid_sa_prop_esp_end %>% 
+  filter(count_esp_full_grid>X) # take only cell with more than X species
+
+
+# Plot
+# hist(grid_sa_prop_esp_end$prop_esp)
+  
+ggplot() + 
+  geom_sf(data=grid_sa_prop_esp_end$geometry, aes(fill=grid_sa_prop_esp_end$prop_esp)) + 
+  scale_fill_viridis(direction = -1, name = "%") +
+  geom_sf(data=frontier$geometry, color = "black", size = 1.5, fill = NA) + 
+  ggtitle ("Proportion of endemic species per cell with more than X species") +
+  theme (plot.title = element_text(size = 12, face = "bold"), axis.text=element_text(size=14, color ="black"), axis.title=element_blank(), legend.title=element_text(size=20, face="bold"), legend.text=element_text(size=14))
+
+```
+
+
+```{r resampling endemic richness grid stat, echo = FALSE}
+
+
+#### Interpolation - resampling per grid cell : use to compare grid cell one to another to highlight grid cell with higher proportion of endemism
+
+nb_esp_sa_grid <- RB_sf_grid %>% 
+  filter (tax_esp != "###") %>% 
+  group_by(ID_grid) %>% 
+  summarise(count_esp_sa_grid =  n_distinct(tax_tax))
+
+
+esp_grid <- left_join(as_tibble(grid_sa), dplyr::select(as_tibble(nb_esp_sa_grid), ID_grid, count_esp_sa_grid), by = "ID_grid") # integrate nb of species per cell to the grid data
+esp_grid <- left_join(esp_grid, as_tibble(grid_sa_nb_spec) %>% dplyr::select(ID_grid, n_spec_sa), by = "ID_grid")
+
+k = 100 # number of individual sample randomly
+l = 30 # value of minimal number of species in a grid cell to compute resampling
+m = 200 # value of minimal number of specimen in a grid cell to compute resampling
+rep = 100 # number of times we repeat the resampling procedure
+resampling_result <- grid_sa
+resampl_end_all <- list()
+
+for (i in 1 : nrow(grid_sa)) {
+tot <- vector()
+end <- vector()
+  if (!is.na (esp_grid$count_esp_sa_grid[i]) & esp_grid$count_esp_sa_grid[i]>l & esp_grid$n_spec_sa[i] > m) { # if grid cell contains more than l species and more than j specimens 
+    for (j in 1 : rep){
+      subsamp <- vector()
+      subsamp <- sample(pull(as_tibble(RB_sf_grid) %>% filter (ID_grid == i) %>% filter (tax_esp != "###") %>% dplyr::select (tax_tax)), size = k, replace = FALSE) # pull allows to make a vector from a column tibble
+      tot[j] <- length(unique(subsamp)) # total richness
+      subsamp <- enframe(subsamp) %>% rename (NameNoAuthors = value) # enframe is the equivalent of as_tibble for a vector
+      end[j] <- nrow(unique(subsamp[subsamp$NameNoAuthors %in% metadata$Name_Initial,])) # endemic richness
+    }
+  tot <- sort (tot)
+  end <- sort (end)
+  resampling_result [i,"mean_tot"] <- mean(tot)
+  resampling_result [i,"min_conf_tot"] <- tot[round(0.025*rep,0)]
+  resampling_result [i,"max_conf_tot"] <- tot[round(0.975*rep,0)]
+  resampling_result [i,"mean_end"] <- mean(end)
+  resampling_result [i,"min_conf_end"] <- end[round(0.025*rep,0)]
+  resampling_result [i,"max_conf_end"] <- end[round(0.975*rep,0)]
+  resampl_end_all [[i]] <- end
+  }
+cat(i, " ")
+}
+
+resampling_result <- resampling_result %>% filter(!is.na(mean_tot))
+
+resampl_end_all <- as_tibble(do.call(cbind, resampl_end_all)) # transform list to columns tibble
+names(resampl_end_all) <- pull(resampling_result,ID_grid) # rename columns to grid ID
+
+resampling_result <- st_intersection(resampling_result %>% st_as_sf() %>% mutate (area = st_area(.)), frontier_sa) %>%
+  mutate(intersect_area = st_area(.), coverage_sa = as.numeric(intersect_area/area*100)) %>% # calculate the % of the cell within the study area
+  filter(coverage_sa > 25) %>%  # remove cells which are not at least 25% in the study area
+  filter(!is.na(mean_tot)) %>% # remove cells without data for mapping
+  dplyr::select(-c(area,intersect_area)) %>% # remove unecessary columns
+  as_tibble() # remove sf attributes for upcoming analyses
+
+
+### Resampling full richness grid plot
+ggplot() + 
+  geom_sf(data=resampling_result$geometry, aes(fill=resampling_result$mean_tot)) + 
+  scale_fill_viridis(direction = -1, name = "Number") + 
+  geom_sf_label(data=resampling_result$geometry, aes(label = resampling_result$mean_tot)) +
+  # geom_sf(data=refuge_Anhuf_all_union$geometry, color = "darkgreen", size = 1.5, fill = NA) +
+  # geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.5, fill = NA) +  
+  geom_sf(data=frontier$geometry, color = "black", size = 1.5, fill = NA) + 
+  ggtitle ("Resamping (k=100): Number of species full richness per cell with more than 50 species and 300 specimens") +
+  theme (plot.title = element_text(size = 8, face = "bold"), axis.text=element_text(size=14, color ="black"), axis.title=element_blank(), legend.title=element_text(size=14, face="bold"), legend.text=element_text(size=14))
+
+
+
+### Resampling endemic richness grid plot
+ggplot() + 
+  geom_sf(data=resampling_result$geometry, aes(fill=resampling_result$mean_end)) + 
+  scale_fill_viridis(direction = -1, name = "Number") + 
+  # geom_sf_label(data=resampling_result$geometry, aes(label = resampling_result$ID_grid)) +
+  geom_sf_label(data=resampling_result$geometry, aes(label = round(resampling_result$mean_end,0))) +
+  geom_sf(data=refuge_Anhuf_all_union$geometry, color = "darkgreen", size = 1.5, fill = NA) +
+  geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.5, fill = NA) +
+  geom_sf(data=frontier$geometry, color = "black", size = 1.5, fill = NA) + 
+  ggtitle ("Resamping (k=100): Number of endemic species richness per cell with more than 50 species and 300 specimens") +
+  theme (plot.title = element_text(size = 8, face = "bold"), axis.text=element_text(size=14, color ="black"), axis.title=element_blank(), legend.title=element_text(size=14, face="bold"), legend.text=element_text(size=14))
+
+# ggsave("centre_endemism_refuge.png", width = 11.69, height = 8.27, dpi = 300)
+
+```
+
+
+## Analyses
+```{r compare grid endemic diversity value}
+
+# We cannot use t.test to test the difference between two grid cells because the subsamples within grid cells are not independent between each others: we do the subsample on the same full sample each time. So we calculate, using permutations, the % of value that is superior or inferior or equal between two grid cells
+
+temp <- data.frame()
+a <- data.frame()
+test <- apply(combn(1:length(resampl_end_all), 2), 2, function(x) {
+  for (i in 1:nrow(resampl_end_all)){
+    for (j in 1:nrow(resampl_end_all)){
+    temp[i,j]<-sign(resampl_end_all[i,x[1]]-resampl_end_all[j,x[2]]) # test the sign of each comparison between values of two columns (100*100) and put it in a data frame
+  }
+}
+a <- bind_rows(a,as.data.frame(c(sum(temp==0)/(nrow(resampl_end_all)^2)*100, sum(temp>0)/(nrow(resampl_end_all)^2)*100, sum(temp<0)/(nrow(resampl_end_all)^2)*100))) # calculate the % of cases where value from the first column is equal, greater or lower to the value of the second columns; put results in a list for each pair of column compared
+})
+sign_test_CoE <- as_tibble(t(bind_cols(test))) %>% # put list values in a tibble
+  mutate(comparison = enframe(combn(colnames(resampl_end_all), 2, FUN = function(x) paste0(x[1],"_",x[2])))$value) %>% 
+  dplyr::select(comparison, everything())
+colnames(sign_test_CoE) <- c("comparison","equal","greater","lower")
+
+
+# Find which cells are adjacent of a certain grid cell
+b <- st_intersects(resampling_result %>% dplyr::select(ID_grid, geometry) %>% st_as_sf(), sparse=T)
+
+temp2<-list()
+for (i in 1:nrow(resampling_result)){
+  temp2[[i]] <- apply(resampling_result[b[[i]],"ID_grid"], 1, FUN = function (x) paste0(resampling_result[i,"ID_grid"], "_", x[1]))
+}
+adjacent_cells <- unlist(temp2)
+
+
+# Define cells which are statistically different from adjacent cells
+sign_test_CoE_diff <- sign_test_CoE %>% 
+  filter(comparison %in% adjacent_cells) %>% # filter only adjacent cells
+  filter (greater>95 | lower>95) %>%  # filter only cells statistically different (greater or lower)
+  separate(col = comparison, into = c("cell1", "cell2"), sep = "_", remove = FALSE)
+
+
+# Define and draw lines between statistically different cells
+lines_CoE <- tibble()
+for (i in 1 : nrow(sign_test_CoE_diff)){
+  lines_CoE[i,"geometry"] <- as_tibble(st_intersection(st_cast(grid_sa %>% filter(as.numeric(ID_grid)==as.numeric(sign_test_CoE_diff[i,"cell1"])), "MULTILINESTRING", group_or_split = FALSE), st_cast(grid_sa %>% filter(as.numeric(ID_grid)==as.numeric(sign_test_CoE_diff[i,"cell2"])), "MULTILINESTRING", group_or_split = FALSE))) %>% dplyr::select(geometry)
+}
+
+
+ggplot() + 
+  geom_sf(data=resampling_result$geometry, aes(fill=resampling_result$mean_end)) + 
+  scale_fill_viridis(direction = -1, name = "No. endemics (k=100)") + 
+  geom_sf(data=lines_CoE$geometry, color = "black", size = 2, font="bold") +
+  geom_sf_label(data=resampling_result$geometry, aes(label = resampling_result$ID_grid), size = 5) +
+  geom_sf(data=refuge_Anhuf_all$geometry, colour = "darkgreen", size = 1.25, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Anhuf_evergreen$geometry, color = "darkgreen", size = 0.75, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.25, fill = NA, linetype = "21") +
+  geom_sf(data=frontier$geometry, color = "black", size = 1, fill = NA) + 
+  coord_sf(xlim = c(8.9, 18.6), ylim = c(-5.6, 4.1)) +
+  theme (axis.title=element_blank(), axis.text=element_text(size=13, color ="black"), legend.title=element_text(size=12.5, face="bold"), legend.text=element_text(size=12.5), legend.position=c(0.125,0.105)) +
+  annotation_scale(pad_x = unit(0.1, "cm"), pad_y = unit(4.3, "cm"), width_hint = 0.2, height = unit(0.4, "cm")) + 
+  annotation_north_arrow(location = "bl", which_north = "true",  height = unit(2, "cm"), width = unit(2, "cm"), pad_x = unit(0.05, "cm"), pad_y = unit(4.65, "cm"), style = north_arrow_fancy_orienteering)
+
+# ggsave("CoE_test_all_map.png", width = 11.69, height = 8.27, dpi = 600)
+
+```
+
+
+```{r correlation centre of endemism / distance to the Maley's refuge}
+
+centroid_grid_sa <- st_centroid(resampling_result %>% st_as_sf()) %>%  # get centroid of grid cells used for resampling
+  arrange(ID_grid) # order by ID_grid number
+dist <- st_distance(refuge_Maley, centroid_grid_sa) # calculate distance from centroid of grid cell to limit of Maley's refuge
+
+grid_dist_to_Maley_CoE <- as_tibble(data.frame(dist_to_Maley = as.vector(dist)/1000, as_tibble(centroid_grid_sa) %>% dplyr::select(ID_grid) %>%  uncount(nrow(refuge_Maley)))) %>% # create a tibble with the distance in km and not meter (/1000) and the coordinates of the points ; uncount allows to duplicate the number of ID_grid to the number of refuge because st_distance have performed all the possible combinations between the centroid of the cell and all the refuge and so we need to combine the exact and in the same order the ID_grid number
+  group_by(ID_grid) %>% 
+  slice(which.min(dist_to_Maley)) # take only the lowest value of the distance between one of the 5 refuge; st_distance has already calculate which centroid are inside a refuge and get it a value of 0
+
+grid_dist_to_Maley_CoE <- left_join(resampling_result, grid_dist_to_Maley_CoE, by = "ID_grid") # join the results of resampling (centre of endemism)
+
+# Test normality of data
+shapiro.test(grid_dist_to_Maley_CoE$dist_to_Maley) # if p_value < 0.05, we reject Ho=data are normally distributed
+shapiro.test(grid_dist_to_Maley_CoE$mean_end)
+
+cor.test(grid_dist_to_Maley_CoE$dist_to_Maley, grid_dist_to_Maley_CoE$mean_end, method = "kendall") # correlation test nb of (resampling) endemic taxa per grid cell vs. distance to the Maley's refuge; Kendall assumes the data don't follow a normal distribution
+
+ggscatter(data = grid_dist_to_Maley_CoE, x="dist_to_Maley", y="mean_end",
+  size = 5,
+  add = "loess",  # Add local regression line (LOESS)
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  label = "ID_grid",
+  font.label = c(16,"plain","black"),
+  repel = TRUE,
+  label.rectangle = TRUE,
+  ylim = c(min(grid_dist_to_Maley_CoE$mean_end),max(grid_dist_to_Maley_CoE$mean_end)),
+  xlab = "distance to the nearest Maley's refugium (km)", ylab = "No. endemic taxa (resampling, k=100)") +
+  # stat_cor(method = "kendall", label.x = 450, label.y = 27, size = 8, face = "bold") +
+  font("xlab", size = 20, face = "bold") +
+  font("ylab", size = 20, face = "bold") +
+  font("xy.text", size = 20)
+
+# ggsave("CoE vs. Maley.png", width = 11.69, height = 8.27, dpi = 600)
+
+
+# Mean and sd of SUs centred on Maley refugia
+mean((grid_dist_to_Maley_CoE %>% filter(dist_to_Maley == 0))$mean_end)
+sd((grid_dist_to_Maley_CoE %>% filter(dist_to_Maley == 0))$mean_end)
+
+```
+
+
+```{r correlation centre of endemism / distance to Anhuf's refuge}
+
+dist <- st_distance(refuge_Anhuf_all, centroid_grid_sa) # calculate distance from centroid of grid cell to limit of Maley's refuge
+
+grid_dist_to_Anhuf_CoE <- as_tibble(data.frame(dist_to_Anhuf = as.vector(dist)/1000, as_tibble(centroid_grid_sa) %>% dplyr::select(ID_grid))) # create a tibble with the distance in km and not meter (/1000) and the coordinates of the points
+
+grid_dist_to_Anhuf_CoE <- left_join(resampling_result, grid_dist_to_Anhuf_CoE, by = "ID_grid") # join the results of resampling (centre of endemism)
+
+# Test normality of data
+shapiro.test(grid_dist_to_Anhuf_CoE$dist_to_Anhuf) # if p_value < 0.05, we reject Ho=data are normally distributed
+shapiro.test(grid_dist_to_Anhuf_CoE$mean_end)
+
+cor.test(grid_dist_to_Anhuf_CoE$dist_to_Anhuf, grid_dist_to_Maley$mean_end, method = "kendall") # correlation test nb of (resampling) endemic taxa per grid cell vs. distance to the Maley's refuge; Kendall assumes the data don't follow a normal distribution
+
+ggscatter(data = grid_dist_to_Anhuf_CoE, x="dist_to_Anhuf", y="mean_end",
+  size = 5,
+  add = "loess",  # Add local regression line (LOESS)
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  label = "ID_grid",
+  font.label = c(16,"plain","black"),
+  repel = TRUE,
+  label.rectangle = TRUE,
+  ylim = c(min(grid_dist_to_Anhuf_CoE$mean_end),max(grid_dist_to_Anhuf_CoE$mean_end)),
+  xlab = "distance to the nearest Anhuf's refugium (km)", ylab = "No. endemic taxa (resampling, k=100)") +
+  # stat_cor(method = "kendall", label.x = 450, label.y = 27, size = 8, face = "bold") +
+  font("xlab", size = 20, face = "bold") +
+  font("ylab", size = 20, face = "bold") +
+  font("xy.text", size = 20)
+
+# ggsave("CoE vs. Anhuf.png", width = 11.69, height = 8.27, dpi = 600)
+
+# Mean and sd of SUs centred on ANhuf refugia
+mean((grid_dist_to_Anhuf_CoE %>% filter(dist_to_Anhuf == 0))$mean_end)
+sd((grid_dist_to_Anhuf_CoE %>% filter(dist_to_Anhuf == 0))$mean_end)
+
+```
+
+
+```{r correlation centre of endemism / distance to the sea}
+
+centroid_grid <- st_centroid(grid_sa) # get centroid of grid cells
+centroid_grid_sa <- st_intersection(centroid_grid, frontier) # take only centroid of grid cells inside study area
+dist <- st_distance(slice(world, 168), centroid_grid_sa) # slice allows to filter row by its index; here we select the coastline corresponding to the central alantic africa (line 168) of the sf object
+
+grid_dist_to_sea <- as_tibble(data.frame(dist_to_sea = as.vector(dist)/1000, as_tibble(centroid_grid_sa) %>% dplyr::select(ID_grid))) # create a data.frame with the distance in km and not meter (/1000) and the coordinates of the points
+
+grid_dist_to_sea <- left_join(resampling_result %>% filter(!is.na(mean_end)), grid_dist_to_sea, by = "ID_grid") %>%  # join the results of resampling (centre of endemism)
+  filter(!is.na(dist_to_sea)) # remove cells for which centroid are outside study area and so for which a distance to sea was not calculated
+
+# Test normality of data
+shapiro.test(grid_dist_to_sea$dist_to_sea)
+shapiro.test(grid_dist_to_sea$mean_end)
+
+cor.test(grid_dist_to_sea$dist_to_sea, grid_dist_to_sea$mean_end, method = "kendall") # correlation test nb of (resampling) endemic taxa per grid cell vs. ditance to the sea
+
+ggscatter(data = grid_dist_to_sea, x="dist_to_sea", y="mean_end", size = 3,
+  add = "reg.line",  # Add regressin line
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  ylim = c(0,max(grid_dist_to_sea$mean_end)),
+  xlab = "distance to the sea (km)", ylab = "number of endemic taxa (resampling, k=100)") +
+  stat_cor(method = "kendall", label.x = 450, label.y = 27, size = 8, face = "bold") +
+  font("xlab", size = 22, face = "bold") +
+  font("ylab", size = 22, face = "bold") +
+  font("xy.text", size = 22)
+
+
+# ggplot(data = grid_dist_to_sea, aes(x=dist_to_sea, y=mean_end)) +
+#   geom_point()
+
+# ggsave("Distance_to_sea.png", width = 11.69, height = 8.27, dpi = 300)
+
+
+## Only in Gabon
+centroid_grid_gabon <- st_intersection(centroid_grid, gabon) # take only centroid of grid cells inside study area
+dist_gab <- st_distance(slice(world, 168), centroid_grid_gabon) # slice allows to filter row by its index; here we select the coastline corresponding to the central alantic africa (line 168) of the sf object
+
+grid_gab_dist_to_sea <- as_tibble(data.frame(dist_to_sea = as.vector(dist_gab)/1000, as_tibble(centroid_grid_gabon) %>% dplyr::select(ID_grid))) # create a data.frame with the distance in km and not meter (/1000) and the coordinates of the points
+
+grid_gab_dist_to_sea <- left_join(resampling_result %>% filter(!is.na(mean_end)), grid_gab_dist_to_sea, by = "ID_grid") %>%  # join the results of resampling (centre of endemism)
+  filter(!is.na(dist_to_sea)) # remove cells for which centroid are outside study area and so for which a distance to sea was not calculated
+
+# Test normality of data
+shapiro.test(grid_gab_dist_to_sea$dist_to_sea)
+shapiro.test(grid_gab_dist_to_sea$mean_end)
+
+cor.test(grid_gab_dist_to_sea$dist_to_sea, grid_gab_dist_to_sea$mean_end, method = "pearson") # correlation test nb of (resampling) endemic taxa per grid cell vs. distance to the sea
+
+ggscatter(data = grid_gab_dist_to_sea, x="dist_to_sea", y="mean_end", size = 3,
+  add = "reg.line",  # Add regressin line
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  ylim = c(0,max(grid_gab_dist_to_sea$mean_end)),
+  xlab = "distance to the sea (km)", ylab = "number of endemic taxa (resampling, k=100)") +
+  stat_cor(method = "pearson", label.x = 250, label.y = 20, size = 8, face = "bold") +
+  font("xlab", size = 22, face = "bold") +
+  font("ylab", size = 22, face = "bold") +
+  font("xy.text", size = 22)
+
+
+```
+
+
+```{r Altitudinal range, echo = FALSE}
+
+# Frequency (number of species) per altitudinal range
+X = 100 # interval of altitudinal representation
+
+range_class <- vector()
+for (i in seq(from=0, to=1099, by=X)){
+  range_class <- c(range_class, sum(range_alt$range_diff>=i & range_alt$range_diff<i+X))
+}
+range_class <- enframe (range_class) %>% 
+  rename(Nb_esp = value) %>% 
+  dplyr::select (Nb_esp)
+a <- seq(from=0, to=1100, by=X) # create class name
+name <- vector()
+for (i in 1:(length(a)-1)){
+  name <- c(name,paste(a[i],a[i+1],sep="-"))
+}
+name <- enframe (name) %>% 
+  rename(class = value)
+range_class <- cbind (range_class, name) %>% # combine class name and values
+  dplyr::select(name, class, Nb_esp) %>% 
+  mutate(Perc= round(Nb_esp/sum(Nb_esp)*100,1))
+
+ggplot(data=range_class, aes(x=reorder(class, name), y=Nb_esp)) + 
+  geom_bar(stat="identity") +
+  geom_text(aes(label=paste(Perc,"%",sep="")), vjust=1.3, color="white", size = 8) +
+  xlab("Altitudinal amplitude") +
+  ylab("Number of taxa") +
+  theme(axis.text=element_text(size=24, color ="black"), axis.title=element_text(size=26,face="bold"), axis.text.x = element_text(angle = 90, hjust = 1, vjust=0.3))
+
+# ggsave("altitudinal_amplitude.png", width = 11.69, height = 8.27, dpi = 300)
+
+# Number of taxa known per alitudinal range
+ALT=700
+sum(range_alt$min<=ALT,range_alt$max<=ALT)-sum(range_alt$min<=ALT & range_alt$max<=ALT) # number of taxa occurring under ALT m elevation
+sum(range_alt$min>=ALT,range_alt$max>=ALT)-sum(range_alt$min>=ALT & range_alt$max>=ALT) # number of taxa occurring above ALT m elevation
+
+```
+
+
+```{r frequence of elevation and endemics in study area}
+
+RB_alt <- as_tibble(get_elev_point(RB_sf, prj="+proj=longlat +datum=WGS84 +no_defs", src= "aws"))
+
+RB_alt <- RB_alt %>% 
+  mutate(elevation = replace(elevation, elevation < 0, 0)) # remove negative value for 0 meter elevation
+
+freq_elev <- as_tibble(freq(srtm)) # count the number of pixel for each value for the raster elevation of the study area
+
+ELEV = 200
+freq_elev %>% filter(!is.na(value)) %>% filter(value > 0) %>% filter (value < ELEV) %>% summarise(inf_elev = sum(count)) %>% mutate (total = pull(freq_elev %>% filter(value > 0) %>% summarise(sum(count)))) %>% mutate (Perc = (inf_elev / total) * 100) # calcul the % of land below ELEV m in the study area
+freq_elev %>% filter(!is.na(value)) %>% filter(value > 0) %>% filter (value > ELEV) %>% summarise(sup_elev = sum(count)) %>% mutate (total = pull(freq_elev %>% filter(value > 0) %>% summarise(sum(count)))) %>% mutate (Perc = (sup_elev / total) * 100) # calcul the % of land above ELEV m in the study area
+
+ELEV1 = 500
+ELEV2 = 700
+freq_elev %>% filter(!is.na(value)) %>% filter(value > 0) %>% filter (value > ELEV1) %>% filter (value < ELEV2) %>% summarise(elev = sum(count)) %>% mutate (total = pull(freq_elev %>% filter(value > 0) %>% summarise(sum(count)))) %>% mutate (Perc = (elev / total) * 100) # calcul the % of land below ELEV m in the study area
+
+plot(srtm %in% 500:700)
+
+### Plot frequence of elevation, endemics, and non endemic species
+# Compute richness in endemic per altitude
+end_rich_elev <- altitude %>% 
+  filter(elevation>0, !is.na(elevation)) %>%
+  group_by(elevation) %>%
+  summarise(count=n_distinct(NameNoAuthors))
+
+end_rich_elev_temp <- as_tibble(rep(end_rich_elev$elevation, end_rich_elev$count)) # create a vector of elevation represented by endemic taxa (richness) to plot it as a kernel density
+
+# Compute richness in species per altitude
+esp_rich_elev <- RB_alt %>%
+  filter(elevation>0, !is.na(elevation), tax_esp != "###") %>%
+  group_by(elevation) %>%
+  summarise(count=n())
+
+esp_rich_elev_temp <- as_tibble(rep(esp_rich_elev$elevation, esp_rich_elev$count)) # create a vector of elevation represented by non endemic taxa (richness) to plot it as a kernel density
+
+# Compute richness in non endemic per altitude
+non_end_rich_elev <- RB_alt %>%
+  filter(elevation>0, !is.na(elevation), tax_esp != "###") %>%
+  filter(!(tax_tax %in% unique(dataset$NameNoAuthors))) %>% # remove all the endemic taxa
+  group_by(elevation) %>%
+  summarise(count=n_distinct(tax_tax))
+
+non_end_rich_elev_temp <- as_tibble(rep(non_end_rich_elev$elevation, non_end_rich_elev$count)) # create a vector of elevation represented by non endemic taxa (richness) to plot it as a kernel density
+
+ggplot() +
+  geom_density (aes(x=(as_tibble(as.data.frame(srtm)) %>% filter(!is.na(mn75_studyare)) %>% filter(mn75_studyare > 0))$mn75_studyare, color="Area"), size=1) +
+  geom_density(aes(x=non_end_rich_elev_temp$value, color="Non-endemics"), size=1) +
+  geom_density(aes(x=end_rich_elev_temp$value, color="Endemics"), size=1) +
+  geom_density(aes(x=esp_rich_elev_temp$value, linetype="Sampling effort"), size=1) +
+  scale_color_manual(values=c("#3333CC", "#339900", "#CC3300")) +
+  scale_linetype_manual(values="dashed") +
+  xlab("Elevation (m a.s.l.)") +
+  ylab("Proportion (kernel density estimation)") +
+  theme (axis.title=element_text(size=20, color ="black"), axis.text=element_text(size=18, color ="black"), legend.title= element_blank(), legend.background=element_blank(), legend.text=element_text(size=20), legend.position=c(0.8,0.9), legend.spacing.y = unit(0.001, 'cm')) +
+  guides(fill = guide_legend(order = 1), linetype = guide_legend(order = 2))
+
+# ggsave("Altitudinal_distribution.png", width = 11.69, height = 8.27, dpi = 600)
+
+```
+
+
+
+
+
+
+###################################################### DIVERSITY OF TREES ######################################################
+# DIVERSITY OF TREES
+```{r data community matrix}
+
+cdm <- transect_spec %>% # matrix of abundance
+  group_by(plot_name) %>% 
+  count(tax_tax) %>% 
+  reshape::cast(., plot_name ~ tax_tax, value='n') %>% # specific function of reshape to calculate abundance within each plot_name
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  remove_rownames(.) %>% 
+  column_to_rownames(., var = "plot_name")
+
+
+```
+
+
+```{r calculate alpha diversity}
+
+# Specific richness
+transect_richness <- enframe(specnumber(cdm)) %>% 
+  dplyr::rename(plot_name = name, richness = value)
+
+# Shannon-Wiener Index
+transect_shannon <- enframe(diversity(cdm, index = "shannon", MARGIN = 1, base = exp(1))) %>% 
+  dplyr::rename(plot_name = name, shannon = value)
+
+# Effective Number of species (Hurlbert)
+# data matrix or dataframe with species as columns and sample units (e.g. plots) as rows
+transect_ens <- as_tibble(ensk(data=cdm, k=min((transect_spec %>% group_by(plot_name) %>% summarise(nb=n()))$nb)), rownames = "plot_name") # we take k as the minimum sample size in any plot.
+colnames(transect_ens)[2] <- "ens"
+
+
+# Join to metadata tibble
+metadata_transect_sf <- left_join(metadata_transect_sf, transect_richness, by="plot_name") %>% 
+  left_join(transect_shannon, by="plot_name") %>% 
+  left_join(transect_ens, by="plot_name")
+
+
+```
+
+
+```{r average alpha diversity per grid cell}
+
+grid_sa_gab <- st_intersection(grid_sa, gabon) # grid cells used for compute centre of endemism, but only from Gabon
+
+metadata_transect_sf_grid <- st_intersection(metadata_transect_sf, grid_sa_gab %>% dplyr::select(ID_grid)) # add ID_grid informationto each transect
+
+tree_diversity_grid <- left_join(grid_sa_gab %>% dplyr::select(ID_grid), as_tibble(metadata_transect_sf_grid %>% group_by(ID_grid) %>% summarise(average_ens = mean(ens))) %>% dplyr::select(ID_grid,average_ens), by="ID_grid") # compute mean of ens per grid cell
+
+ggplot() + 
+  geom_sf(data=tree_diversity_grid$geometry, aes(fill=tree_diversity_grid$average_ens)) + 
+  scale_fill_viridis(direction = -1, name = "ENS (mean; k=55)") + 
+  geom_sf_label(data=(tree_diversity_grid %>% filter(!is.na(average_ens)))$geometry, aes(label = (tree_diversity_grid %>% filter(!is.na(average_ens)))$ID_grid), size = 7) +
+  geom_sf(data=refuge_Anhuf_all$geometry, colour = "darkgreen", size = 1.25, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Anhuf_evergreen$geometry, color = "darkgreen", size = 0.75, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.25, fill = NA, linetype = "21") +
+  geom_sf(data=frontier$geometry, color = "black", size = 1, fill = NA) +
+  coord_sf(xlim = c(8.8, 14.3), ylim = c(-3.7, 2.1)) + # to choose the extent of the plotting
+  theme (axis.title=element_blank(), axis.text=element_text(size=16, color ="black"), legend.title=element_text(size=18, face="bold"), legend.text=element_text(size=16), legend.position=c(0.75,0.12)) +
+  annotation_scale(width_hint = 0.3, height = unit(0.4, "cm")) + 
+  annotation_north_arrow(location = "bl", which_north = "true",  height = unit(2, "cm"), width = unit(2, "cm"), pad_x = unit(0.05, "cm"), pad_y = unit(0.9, "cm"), style = north_arrow_fancy_orienteering)
+
+# ggsave("Transect_ENS_map.png", width = 11.69, height = 8.27, dpi = 600)
+
+```
+
+```{r correlation alpha diversity (ens) / distance to the Maley's refuge}
+
+### From grid cell 
+centroid_grid_sa_gab <- st_centroid(grid_sa_gab %>% st_as_sf()) %>%  # get centroid of grid cells used for resampling
+  arrange(ID_grid) # order by ID_grid number
+dist <- st_distance(refuge_Maley, centroid_grid_sa_gab) # calculate distance from centroid of grid cell to limit of Maley's refuge
+
+grid_dist_to_Maley_transect <- as_tibble(data.frame(dist_to_Maley = as.vector(dist)/1000, as_tibble(centroid_grid_sa_gab) %>% dplyr::select(ID_grid) %>%  uncount(nrow(refuge_Maley)))) %>% # create a tibble with the distance in km and not meter (/1000) and the coordinates of the points ; uncount allows to duplicate the number of ID_grid to the number of refuge because st_distance have performed all the possible combinations between the centroid of the cell and all the refuge and so we need to combine the exact and in the same order the ID_grid number
+  group_by(ID_grid) %>% 
+  slice(which.min(dist_to_Maley)) # take only the lowest value of the distance between one of the 5 refuge; st_distance has already calculate which centroid are inside a refuge and get it a value of 0
+
+grid_dist_to_Maley_transect <- left_join(tree_diversity_grid, grid_dist_to_Maley_transect, by = "ID_grid") # join the results of resampling (centre of endemism)
+
+# Test normality of data
+shapiro.test(grid_dist_to_Maley_transect$dist_to_Maley) # if p_value < 0.05, we reject Ho=data are normally distributed
+shapiro.test(grid_dist_to_Maley_transect$average_ens)
+
+cor.test(grid_dist_to_Maley_transect$dist_to_Maley, grid_dist_to_Maley_transect$average_ens, method = "kendall") # correlation test nb of (resampling) endemic taxa per grid cell vs. distance to the Maley's refuge; Kendall assumes the data don't follow a normal distribution
+
+ggscatter(data = grid_dist_to_Maley_transect%>% filter(!is.na(average_ens)), x="dist_to_Maley", y="average_ens", 
+  size = 8,
+  add = "loess",  # Add local regression line (LOESS)
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  label = "ID_grid",
+  font.label = c(28,"plain","black"),
+  repel = TRUE,
+  label.rectangle = TRUE,
+  xlim = c(min((grid_dist_to_Maley_transect%>% filter(!is.na(average_ens)))$dist_to_Maley),max((grid_dist_to_Maley_transect%>% filter(!is.na(average_ens)))$dist_to_Maley)),
+  ylim = c(min(grid_dist_to_Maley_transect$average_ens, na.rm = T),max(grid_dist_to_Maley_transect$average_ens, na.rm = T)),
+  xlab = "distance to the nearest Maley's refugium (km)", ylab = "Effective number of species (resampling, k=52)") +
+  # stat_cor(method = "kendall", label.x = 200, label.y = 15, size = 8, face = "bold") +
+  font("xlab", size = 20, face = "bold") +
+  font("ylab", size = 20, face = "bold") +
+  font("xy.text", size = 20)
+
+# ggsave("Transect_ENS vs. Maley.png", width = 11.69, height = 8.27, dpi = 600)
+
+# Mean and sd of SUs centred on Maley refugia
+mean((grid_dist_to_Maley_transect %>% filter(dist_to_Maley == 0))$average_ens, na.rm = T)
+sd((grid_dist_to_Maley_transect %>% filter(dist_to_Maley == 0))$average_ens, na.rm = T)
+
+
+### From transect
+dist <- st_distance(refuge_Maley, metadata_transect_sf %>% filter(!is.na(richness))) # calculate distance from transect to limit of Maley's refuge
+
+transect_dist_to_Maley <- as_tibble(data.frame(dist_to_Maley = as.vector(dist)/1000, as_tibble(metadata_transect_sf %>% filter(!is.na(richness))) %>% uncount(nrow(refuge_Maley)))) %>% # create a tibble with the distance in km and not meter (/1000) and the coordinates of the points ; uncount allows to duplicate the number of transect to the number of refuge because st_distance have performed all the possible combinations between the centroid of the cell and all the refuge and so we need to combine the exact and in the same order the transect number
+  group_by(plot_name) %>% 
+  slice(which.min(dist_to_Maley)) # take only the lowest value of the distance between one of the 5 refuge; st_distance has already calculate which transect are inside a refuge and get it a value of 0
+
+
+# Test normality of data
+shapiro.test(transect_dist_to_Maley$dist_to_Maley) # if p_value < 0.05, we reject Ho=data are normally distributed
+shapiro.test(transect_dist_to_Maley$ens)
+
+cor.test(transect_dist_to_Maley$dist_to_Maley, transect_dist_to_Maley$ens, method = "kendall") # correlation test nb of tree taxa per transect vs. distance to the Maley's refuge; Kendall assumes the data don't follow a normal distribution
+
+ggscatter(data = transect_dist_to_Maley, x="dist_to_Maley", y="ens", size = 5, shape = 21,
+  fill="dist_to_Maley",
+  add = "loess",  # Add regressin line
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  ylim = c(0,max(transect_dist_to_Maley$ens)),
+  xlab = "distance to the Maley's refuge (km)", ylab = "Effective number of species (resampling, k=52)") +
+  stat_cor(method = "kendall", label.x = 200, label.y = 1, size = 8, face = "bold") +
+  scale_fill_viridis(direction = -1, name = "Distance") +
+  font("xlab", size = 22, face = "bold") +
+  font("ylab", size = 22, face = "bold") +
+  font("xy.text", size = 22)
+
+
+# ggsave("diversity_trees_Maley.png", width = 11.69, height = 8.27, dpi = 300)
+
+```
+
+
+```{r correlation alpha diversity / Anhuf's refuge}
+
+### From grid cell 
+centroid_grid_sa_gab <- st_centroid(grid_sa_gab %>% st_as_sf()) %>%  # get centroid of grid cells used for resampling
+  arrange(ID_grid) # order by ID_grid number
+dist <- st_distance(refuge_Anhuf_all, centroid_grid_sa_gab) # calculate distance from centroid of grid cell to limit of Maley's refuge
+
+grid_dist_to_Anhuf_transect <- as_tibble(data.frame(dist_to_Anhuf = as.vector(dist)/1000, as_tibble(centroid_grid_sa_gab) %>% dplyr::select(ID_grid))) # create a tibble with the distance in km and not meter (/1000) and the coordinates of the points 
+
+grid_dist_to_Anhuf_transect <- left_join(tree_diversity_grid, grid_dist_to_Anhuf_transect, by = "ID_grid") # join the results of resampling (centre of endemism)
+
+# Test normality of data
+shapiro.test(grid_dist_to_Anhuf_transect$dist_to_Anhuf) # if p_value < 0.05, we reject Ho=data are normally distributed
+shapiro.test(grid_dist_to_Anhuf_transect$average_ens)
+
+cor.test(grid_dist_to_Anhuf_transect$dist_to_Anhuf, grid_dist_to_Anhuf_transect$average_ens, method = "kendall") # correlation test nb of (resampling) endemic taxa per grid cell vs. distance to the Anhuf's refuge; Kendall assumes the data don't follow a normal distribution
+
+ggscatter(data = grid_dist_to_Anhuf_transect%>% filter(!is.na(average_ens)), x="dist_to_Anhuf", y="average_ens", 
+  size = 8,
+  add = "loess",  # Add local regression line (LOESS)
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  label = "ID_grid",
+  font.label = c(28,"plain","black"),
+  repel = TRUE,
+  label.rectangle = TRUE,
+  xlim = c(min((grid_dist_to_Anhuf_transect%>% filter(!is.na(average_ens)))$dist_to_Anhuf),max((grid_dist_to_Anhuf_transect%>% filter(!is.na(average_ens)))$dist_to_Anhuf)),
+  ylim = c(min(grid_dist_to_Anhuf_transect$average_ens, na.rm = T),max(grid_dist_to_Anhuf_transect$average_ens, na.rm = T)),
+  xlab = "distance to the nearest Anhuf's refugium (km)", ylab = "Effective number of species (resampling, k=52)") +
+  # stat_cor(method = "kendall", label.x = 200, label.y = 15, size = 8, face = "bold") +
+  font("xlab", size = 20, face = "bold") +
+  font("ylab", size = 20, face = "bold") +
+  font("xy.text", size = 20)
+
+# ggsave("Transect_ENS vs. Anhuf.png", width = 11.69, height = 8.27, dpi = 600)
+
+# Mean and sd of SUs centred on Maley refugia
+mean((grid_dist_to_Anhuf_transect %>% filter(dist_to_Anhuf == 0))$average_ens, na.rm = T)
+sd((grid_dist_to_Anhuf_transect %>% filter(dist_to_Anhuf == 0))$average_ens, na.rm = T)
+
+
+### From transect
+dist <- st_distance(refuge_Anhuf_all, metadata_transect_sf %>% filter(!is.na(richness))) # calculate distance from transect to limit of Anhuf's refuge
+
+transect_dist_to_Anhuf <- as_tibble(data.frame(dist_to_Anhuf = as.vector(dist)/1000, as_tibble(metadata_transect_sf %>% filter(!is.na(richness)))))  # create a tibble with the distance in km and not meter (/1000) and the coordinates of the points ; 
+
+
+# Test normality of data
+shapiro.test(transect_dist_to_Anhuf$dist_to_Anhuf) # if p_value < 0.05, we reject Ho=data are normally distributed
+shapiro.test(transect_dist_to_Anhuf$ens)
+
+cor.test(transect_dist_to_Anhuf$dist_to_Anhuf, transect_dist_to_Anhuf$ens, method = "kendall") # correlation test nb of tree taxa per transect vs. distance to the Maley's refuge; Kendall assumes the data don't follow a normal distribution
+
+ggscatter(data = transect_dist_to_Anhuf, x="dist_to_Anhuf", y="ens", size = 5, shape = 21,
+  fill="dist_to_Anhuf",
+  add = "loess",  # Add regressin line
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  ylim = c(0,max(transect_dist_to_Anhuf$ens)),
+  xlab = "distance to Anhuf's refuge (km)", ylab = "Effective number of species (resampling, k=52)") +
+  stat_cor(method = "kendall", label.x = 110, label.y = 1, size = 8, face = "bold") +
+  scale_fill_viridis(direction = -1, name = "Distance") +
+  font("xlab", size = 22, face = "bold") +
+  font("ylab", size = 22, face = "bold") +
+  font("xy.text", size = 22)
+
+# ggsave("diversity_trees_Anhuf.png", width = 11.69, height = 8.27, dpi = 300)
+
+```
+
+
+```{r correlation endemism diversity vs. tree diversity per cells}
+
+grid_gab_tree_endemic <- inner_join(as_tibble(tree_diversity_grid) %>% filter(!is.na(average_ens)), resampling_result %>% dplyr::select(ID_grid, mean_end), by ="ID_grid") # join tree diversity and endemism diversity data per grid (which match both)
+
+# Test normality of data
+shapiro.test(grid_gab_tree_endemic$mean_end) # if p_value < 0.05, we reject Ho=data are normally distributed
+shapiro.test(grid_gab_tree_endemic$average_ens)
+
+cor.test(grid_gab_tree_endemic$mean_end, grid_gab_tree_endemic$average_ens, method = "pearson")
+# Why not using Chi2 test ?
+
+ggscatter(data = grid_gab_tree_endemic, x="mean_end", y="average_ens", 
+  size = 6,
+  add = "reg",  # Add local regression line (LOESS)
+  add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+  conf.int = TRUE, # Add confidence interval
+  label = "ID_grid",
+  font.label = c(14,"plain","black"),
+  repel = TRUE,
+  label.rectangle = TRUE,
+  xlim = c(min(grid_gab_tree_endemic$mean_end),max(grid_gab_tree_endemic$mean_end)),
+  ylim = c(min(grid_gab_tree_endemic$average_ens),max(grid_gab_tree_endemic$average_ens)),
+  xlab = "Endemic diversity", ylab = "Tree diversity") +
+  stat_cor(method = "pearson", size = 8, face = "bold") +
+  font("xlab", size = 20, face = "bold") +
+  font("ylab", size = 20, face = "bold") +
+  font("xy.text", size = 20)
+
+# ggsave("Diversity endemic vs. trees.png", width = 11.69, height = 8.27, dpi = 600)
+
+```
+
+
+```{r map transect and refuge hypotheses}
+
+# Maley
+ggplot() + 
+  geom_sf(data=transect_dist_to_Maley$geometry, aes(fill=transect_dist_to_Maley$dist_to_Maley), size = 5, shape = 21, color="black") + 
+  scale_fill_viridis(direction = -1, name = "Distance") +
+  # geom_sf_label(data=transect_dist_to_Maley$geometry, aes(label = transect_dist_to_Maley$plot_name)) +
+  # geom_sf(data=refuge_Anhuf_all_union$geometry, color = "darkgreen", size = 1.5, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.5, fill = NA, linetype = "21") +
+  geom_sf(data=frontier$geometry, color = "black", size = 1, fill = NA) + 
+  theme (plot.title = element_text(size = 8, face = "bold"), axis.text=element_text(size=14, color ="black"), axis.title=element_blank(), legend.title=element_text(size=14, face="bold"), legend.text=element_text(size=14))
+
+# ggsave("transect_Maley.png", width = 11.69, height = 8.27, dpi = 300)
+
+# Anhuf
+ggplot() + 
+  geom_sf(data=transect_dist_to_Anhuf$geometry, aes(fill=transect_dist_to_Anhuf$dist_to_Anhuf), size = 5, shape = 21, color="black") + 
+  scale_fill_viridis(direction = -1, name = "Distance") +
+  # geom_sf_label(data=transect_dist_to_Maley$geometry, aes(label = transect_dist_to_Maley$plot_name)) +
+  geom_sf(data=refuge_Anhuf_all_union$geometry, color = "darkgreen", size = 1.5, fill = NA, linetype = "21") +
+  # geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.5, fill = NA, linetype = "21") +
+  geom_sf(data=frontier$geometry, color = "black", size = 1, fill = NA) + 
+  theme (plot.title = element_text(size = 8, face = "bold"), axis.text=element_text(size=14, color ="black"), axis.title=element_blank(), legend.title=element_text(size=14, face="bold"), legend.text=element_text(size=14))
+
+# ggsave("transect_Anhuf.png", width = 11.69, height = 8.27, dpi = 300)
+
+```
+
+
+
+
+
+###################################################### AREAS OF ENDEMISM ######################################################
+# AREAS OF ENDEMISM
+## Map choice
+
+```{r map choice from different parameters}
+
+path <- "D:/WORK/THESIS/RAINBIO_exploration/Bioregion_foret/Infomap paper/raw maps"
+maps <- list.files(path)
+
+compar_wthin_grid <- list()
+
+# Define grid from minimal size cell (0.5?) parameter for all study area
+xmin = 8.5
+xmax = 19
+ymax = 4.5
+ymin = -6
+lon <- c(xmin, xmax, xmax, xmin)
+lat <- c(ymin, ymin, ymax, ymax)
+lonlat <- cbind(lon, lat)
+p <- Polygon(lonlat)
+ps <- Polygons(list(p),1)
+sa_bbox <- SpatialPolygons(list(ps))
+proj4string(sa_bbox) = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+sa_bbox <- st_as_sf(sa_bbox, crs = 4326) # create the bounding box of study area
+
+CS=0.5 # size in decimal degree of cell size
+grid_sa <- st_make_grid(sa_bbox, n=c(diff(st_bbox(sa_bbox)[c(1, 3)]), diff(st_bbox(sa_bbox)[c(2, 4)]))/CS, square = TRUE)
+
+grid_sa <- as_tibble(grid_sa) %>% # integrate numero of cell in grid
+  mutate (ID_grid = c(1:length(grid_sa))) %>% 
+  st_as_sf ()
+
+
+#### Find which map is the least different to all others (= the most representative) between all (here: 36) different maps
+for (z in 1:length(maps)){
+
+## Map drawing
+grid <- geojson_sf(paste(path,"/",maps[z], sep=""))
+df_union_cast <- st_cast(grid, "POLYGON") # split multipolygons in multiple polygons
+# plot(df_union_cast$geometry)
+df_union_cast <- df_union_cast %>% # add a number to each polygon
+  add_column(ID_grid=seq(1, nrow(.)))
+overlap <- st_within(df_union_cast,df_union_cast)
+nbe_elements <- unlist(lapply(overlap, function (x) length(x))) #  get number of integer (=in how many different cells the cell is inserted) found for each grid cell
+ids_cell <- unique(df_union_cast$ID_grid)
+for (j in 1:length(ids_cell)) {
+  df_union_cast_selected <- df_union_cast %>% # select the cell
+    dplyr::filter(ID_grid == ids_cell[j])
+  which_element_contain <- unlist(lapply(overlap, function (x) any(x==ids_cell[j]))) # which list element contain the cell
+  if(any(nbe_elements[which_element_contain]>1)) { # if any cell that contain the cell has more than 1
+    ids_all <- unique(unlist(overlap[which_element_contain])) # select cells containing (=include with) the cell
+    ids_all <- ids_all[ids_all!=ids_cell[j]] # exclude selected cell
+    if(any(st_area(df_union_cast[df_union_cast$ID_grid %in% ids_all,])<st_area(df_union_cast_selected))){ # if selected cell area is greater than others one(s) include with
+          df_union_cast_within <- df_union_cast %>% # select polygons containing (=include with) the cell
+            dplyr::filter(ID_grid %in% ids_all)
+          df_union_cast_within <- df_union_cast_within[which(st_area(df_union_cast_within)<st_area(df_union_cast_selected)),] # select only polygons that are smaller than selected cell
+          df_union_cast_within_union <- st_union(df_union_cast_within) # create a multipolgon from all previously selected polygons
+          difference <- st_difference(df_union_cast_selected, df_union_cast_within_union) # take the difference
+          df_union_cast[j,]$geometry <- difference$geometry # attribute the new geometry to the polygon
+    }
+  }
+}
+overlap <- st_within(df_union_cast,df_union_cast) # to check if overlap remains
+bioregions_union <- df_union_cast %>% # group polygons from a same bioregion to a unique multipolygon
+  group_by(bioregion) %>% 
+  summarise()
+clip_bioregions <- st_intersection(bioregions_union, frontier_sa)
+
+
+## Find the bioregion containing in each cell
+grid_bioregion1 <- st_intersection(grid_sa, clip_bioregions) %>%  # add value of bioregion to each grid cell
+  arrange(ID_grid) # arrange tibble by ID_grid
+
+grid_bioregion1 <- left_join(as_tibble(grid_sa), dplyr::select(as_tibble(grid_bioregion1), ID_grid, bioregion), by = "ID_grid") %>%  # to add grid with NA bioregion
+  dplyr::select(ID_grid, bioregion, geometry)
+
+touch <- as_tibble(st_touches(grid_sa,clip_bioregions)) %>% # find which polygons touch at their boundaries, but do not intersect in their interiors
+  rename(ID_grid=row.id) %>% 
+  rename(bioregion_touch=col.id) %>% 
+  group_by(ID_grid) %>% 
+  mutate(bioregion_touchID = paste0('bioregion_touch', row_number())) %>% # name the number of touch bioregion
+  spread(bioregion_touchID, bioregion_touch) # spread bioregion_touch over several columns
+
+grid_bioregion1 <- left_join(grid_bioregion1, touch, by = "ID_grid") # add which bioregion the grid touches
+
+# grid_bioregion2 <- grid_bioregion1 %>% 
+#   filter(is.na(bioregion) | !(bioregion %in% c(bioregion_touch1, bioregion_touch2, bioregion_touch3))) # don't work so use a loop :
+
+grid_bioregion2 <- tibble()
+for (i in 1:nrow(grid_bioregion1)){ # remove lines for which it is a repetition of the grid because it touches another bioregion
+  touchy <- vector()
+  for (j in 4 : length(grid_bioregion1)){
+    a <- deframe(grid_bioregion1[i,j])
+    touchy <- c(touchy, a)
+  }
+    if(is.na(grid_bioregion1[i,"bioregion"]) | !(grid_bioregion1[i,"bioregion"] %in% touchy)){
+      grid_bioregion2 <- rbind(grid_bioregion2,grid_bioregion1[i,])
+      }else{
+        grid_bioregion2 <- grid_bioregion2}
+}
+
+missing_grid <- grid_bioregion1[grid_bioregion1$ID_grid %in% grid_sa[!(grid_sa$ID_grid %in% grid_bioregion2$ID_grid),]$ID_grid,] # identify grid which are NA (bioregion) but touches another bioregion and was remove in the previous step
+missing_grid <- missing_grid[!duplicated(missing_grid$ID_grid),]
+missing_grid$bioregion <- NA
+
+grid_bioregion <- rbind(grid_bioregion2, missing_grid) %>%  # add the missing grid identified in the previous step
+  arrange(ID_grid) 
+
+# ggplot() + # plot bioregions
+#   geom_sf(data=grid_bioregion$geometry, aes(fill=as.factor(grid_bioregion$bioregion))) +
+#   scale_fill_manual(values = getPalette(colourCount)) +
+#   geom_sf_text(data=grid_bioregion$geometry, aes(label = grid_bioregion$bioregion), size=3) +
+#   geom_sf(data=frontier$geometry, color = "black", size = 1, fill = NA) +
+#   theme(legend.position="none", axis.title = element_blank(), axis.text = element_blank())
+
+
+## Compare each grid value to each other grid value
+combin_wthin_grid <- combn(grid_bioregion$bioregion, 2, FUN = function(x) x[1]==x[2]) # combn realize all possible combinations taking m (here=2) elements each times; FUN allows to compare each combination of there are identical values or not
+compar_wthin_grid[[z]] <- as.integer(as.logical(combin_wthin_grid)) # transform TRUE/FALSE in 1/0
+}
+
+compar_btwin_grid <- t(combn(length(compar_wthin_grid), 2, FUN = function(x) compar_wthin_grid[[x[1]]][]==compar_wthin_grid[[x[2]]][])) # compare value between each map
+rownames(compar_btwin_grid) = combn(length(compar_wthin_grid), 2, FUN = function(x) paste0(x[1],"_",x[2]))
+
+grid_agree <- apply(compar_btwin_grid, 1, function(x) sum(x %in% 1)) # count number of agreement (=1) between each combinations of 2 maps
+grid_desagree <- apply(compar_btwin_grid, 1, function(x) sum(x %in% 0)) # count number of agreement (=0) between each combinations of 2 maps
+
+compar_synthesis <- enframe(grid_agree) %>%  # put results in a tibble
+  separate(name, c("Map1","Map2"), sep="_", remove = FALSE, convert = TRUE) %>% 
+  rename("Agree" = value) %>% 
+  left_join(enframe(grid_desagree), by = "name") %>% # add column count desagree
+  rename("Desagree" = value) %>% 
+  mutate(Prop = Agree / (Agree + Desagree))  # proportion of agreement in all possible comparisons (when there was NA, it was not considered as a possible comparison)
+
+representative_map <- enframe(1:length(maps)) # mean value of agreement per map and sort them
+for (i in 1:length(maps)){
+representative_map[i,"mean"] <- compar_synthesis %>% 
+  filter (Map1 == i | Map2 == i) %>% 
+  summarise (mean = mean(Prop)) 
+}
+representative_map <- representative_map %>% 
+  rename ("Map" = name) %>%
+  dplyr::select(-value) %>% 
+  arrange (desc(mean)) # use desc() to put at the top the map with most proportion of agreement
+
+maps[deframe(representative_map[1,"Map"])] # give the most representative map
+
+```
+
+
+## Analyses
+
+```{r rapid map creation}
+
+# Bioregion mapping
+grid <- geojson_sf("Infomap/raw maps/Specimens_georeferenced_foret_TSBC_bioregions_0.5_2_1.1_50_400.geojson")
+df_union_cast <- st_cast(grid, "POLYGON") # split multipolygons in multiple polygons
+# plot(df_union_cast$geometry)
+df_union_cast <- df_union_cast %>% # add a number to each polygon
+  add_column(ID_grid=seq(1, nrow(.)))
+overlap <- st_within(df_union_cast,df_union_cast)
+nbe_elements <- unlist(lapply(overlap, function (x) length(x))) #  get number of integer (=in how many different cells the cell is inserted) found for each grid cell
+ids_cell <- unique(df_union_cast$ID_grid)
+for (j in 1:length(ids_cell)) {
+  df_union_cast_selected <- df_union_cast %>% # select the cell
+    dplyr::filter(ID_grid == ids_cell[j])
+  which_element_contain <- unlist(lapply(overlap, function (x) any(x==ids_cell[j]))) # which list element contain the cell
+  if(any(nbe_elements[which_element_contain]>1)) { # if any cell that contain the cell has more than 1
+    ids_all <- unique(unlist(overlap[which_element_contain])) # select cells containing (=include with) the cell
+    ids_all <- ids_all[ids_all!=ids_cell[j]] # exclude selected cell
+    if(any(st_area(df_union_cast[df_union_cast$ID_grid %in% ids_all,])<st_area(df_union_cast_selected))){ # if selected cell area is greater than others one(s) include with
+          df_union_cast_within <- df_union_cast %>% # select polygons containing (=include with) the cell
+            dplyr::filter(ID_grid %in% ids_all)
+          df_union_cast_within <- df_union_cast_within[which(st_area(df_union_cast_within)<st_area(df_union_cast_selected)),] # select only polygons that are smaller than selected cell
+          df_union_cast_within_union <- st_union(df_union_cast_within) # create a multipolgon from all previously selected polygons
+          difference <- st_difference(df_union_cast_selected, df_union_cast_within_union) # take the difference
+          df_union_cast[j,]$geometry <- difference$geometry # attribute the new geometry to the polygon
+    }
+  }
+}
+overlap <- st_within(df_union_cast,df_union_cast) # to check if overlap remains; should not have more than 1 value per row
+bioregions_union <- df_union_cast %>% # group polygons from a same bioregion to a unique multipolygon
+  group_by(bioregion) %>% 
+  summarise()
+clip_bioregions <- st_intersection(bioregions_union, frontier_sa)
+
+colourCount = length(unique(grid$bioregion)) # mini function to get as much color as number of bioregions
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+
+ggplot() + # plot bioregions
+  geom_sf(data=clip_bioregions$geometry, aes(fill=as.factor(clip_bioregions$bioregion))) +
+  scale_fill_manual(values = getPalette(colourCount)) +
+  # geom_sf(data=refuge_Anhuf_all_union$geometry, color = "darkgreen", size = 1.5, fill = NA, linetype = "21") +
+  # geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.5, fill = NA, linetype = "21") +
+  geom_sf_text(data=clip_bioregions$geometry, aes(label = clip_bioregions$bioregion), size=5, fontface="bold") +
+  geom_sf(data=frontier$geometry, color = "black", size = 1, fill = NA) +
+  theme(legend.position=c(0.85,0.8), legend.title = element_text(size = 20), legend.text = element_text(size = 20), axis.title = element_blank(), axis.text = element_text(size = 18, color = "black")) +
+  guides(fill=guide_legend(ncol=2)) +
+  labs(fill = "Bioregions")
+
+# ggsave("AoE_test_all.png", width = 11.69, height = 8.27, dpi = 300)
+
+```
+
+
+#### Characterize flora of bioregions
+
+```{r attribute specimens to bioregions}
+
+dataset_bioreg <- st_intersection(dataset_sf,bioregions_union) # specimen with bioregions attribution
+
+sum(dataset_sf$ID %in% dataset_bioreg$ID)/nrow(dataset_sf)*100 # % of specimens falling into a bioregion
+
+# Specimens at the border of 2 different bioregions and that can not be attributed to one specific bioregion
+ID_spec_dups <- unique(dataset_bioreg$ID[duplicated(dataset_bioreg$ID)]) # which ID specimens are duplicated by st_intersection (= falling at the border of two different bioregions)
+
+dataset_bioreg <- dataset_bioreg[!(dataset_bioreg$ID %in% ID_spec_dups),] # dataset with only specimens falling into specific bioregion (remove those from borders)
+
+nrow(dataset_bioreg)/nrow(dataset_sf)*100 # % of specimens with attributed bioregion
+
+```
+
+
+```{r presence/absence table}
+
+### Make a presence/absence table
+bioreg_species <- dataset_bioreg %>% # count number of specimens per species per bioregion
+  group_by(bioregion) %>% 
+  count(NameNoAuthors)
+
+ids_bioreg <- unique(dataset_bioreg$bioregion) # number of bioregions
+species <- sort(unique(dataset_bioreg$NameNoAuthors)) # name of taxa
+
+mat_presabs <- matrix(nrow=length(ids_bioreg), ncol=length(species)) # building matrix presence/absence
+colnames(mat_presabs) <-  c(species)
+
+for (i in 1:length(ids_bioreg)){ # compute presence/absence in the matrix
+  for (j in 1:length(species)){
+    if (any(bioreg_species$bioregion == i & bioreg_species$NameNoAuthors == species[j])){
+      mat_presabs[i,j] = 1
+    } else {
+      mat_presabs[i,j] = 0
+    }
+  }
+}
+mat_presabs <- as_tibble(mat_presabs) # make a tibble of presence/absence matrix
+
+```
+
+
+```{r caracterisation flore bioregions}
+
+## Specific richness in bioregions
+total_richness <- st_intersection(bioregions_union,RB_sf) %>% # attribute bioregion to specimens
+  filter(tax_esp != "###") # remove specimens not identified at species level
+ID_RB_spec_dups <- unique(total_richness$ID_RB_study_area[duplicated(total_richness$ID_RB_study_area)]) # which ID specimens are duplicated by st_intersection (= falling at the border of two different bioregions)
+total_richness <- total_richness[!(total_richness$ID_RB_study_area %in% ID_RB_spec_dups),] # dataset with only specimens falling into specific bioregion (remove those from borders)
+total_richness <- total_richness %>% 
+  group_by (bioregion) %>%
+  summarise(full_esp =  n_distinct(tax_tax), full_spec = n())  # count number of species and specimens per bioregion
+st_geometry(total_richness) <- NULL # remove sf class to join tibbles ci-infra
+
+
+## Endemics of study area in bioregion
+end_richness <- dataset_bioreg %>% 
+  group_by (bioregion) %>%
+  summarise(end_esp =  n_distinct(NameNoAuthors), end_spec = n()) # count number of endemic species and specimens of study area per bioregion
+st_geometry(end_richness) <- NULL # remove sf class to join tibbles ci-infra
+
+
+## Habitus proportion of endemics within bioregion
+dataset_habitat_us <- left_join(dataset_bioreg, dplyr::select(metadata, Name_Initial, Habitat_code, Habitus1), by = c("NameNoAuthors" = "Name_Initial"))
+habitat_us <- dataset_habitat_us %>% 
+  group_by(bioregion) %>% 
+  summarise("end_tree(%)" = round(sum(Habitus1 =="tree")/n()*100,1), "end_shrub(%)" = round(sum(Habitus1 =="shrub")/n()*100,1), "end_herb(%)" = round(sum(Habitus1 =="herb")/n()*100,1), "end_liana(%)" = round(sum(Habitus1 =="liana")/n()*100,1), "end_habitus_unknown(%)" = round(sum(Habitus1 =="unknown")/n()*100,1))
+st_geometry(habitat_us) <- NULL # remove sf class to join tibbles ci-infra
+
+
+
+## Strict endemics (element) richness in bioregion
+dataset_bioreg_not_sf <- dataset_bioreg
+st_geometry(dataset_bioreg_not_sf) <- NULL
+dataset_sf_bioregion <- left_join(dataset_sf, dplyr::select(dataset_bioreg_not_sf, ID, bioregion), by="ID") %>% 
+  mutate(bioregion = replace(bioregion, is.na(bioregion), 0)) # attribute value 0 to specimens which are not in any bioregions (completely outside or exactly between two bioregions)
+bioreg_species_elements <- dataset_sf_bioregion %>% # count number of specimens per species per bioregion
+  group_by(bioregion) %>% 
+  count(NameNoAuthors)
+ids_bioreg2 <- unique(dataset_sf_bioregion$bioregion) # number of bioregions
+species <- sort(unique(dataset_sf_bioregion$NameNoAuthors)) # name of taxa
+mat_presabs2 <- matrix(nrow=length(ids_bioreg2), ncol=length(species)) # building matrix presence/absence
+colnames(mat_presabs2) <-  c(species)
+rownames(mat_presabs2) <- c(sort(ids_bioreg2))
+for (i in 0:length(ids_bioreg2)-1){ # compute presence/absence in the matrix
+  for (j in 1:length(species)){
+    if (any(bioreg_species_elements$bioregion == i & bioreg_species_elements$NameNoAuthors == species[j])){
+      mat_presabs2[i+1,j] = 1
+    } else {
+      mat_presabs2[i+1,j] = 0
+    }
+  }
+}
+mat_presabs2 <- as_tibble(mat_presabs2) # make a tibble of presence/absence matrix
+
+elements <- rbind(mat_presabs2, colSums(mat_presabs2)) # in how much bioregions a species is found
+elements <- as_tibble(cbind(taxa = names(elements), t(elements))) # flip row/column mat_presabs
+colnames(elements)[2:(nrow(mat_presabs2)+1)] <- seq(0,nrow(mat_presabs2)-1) # give number of bioregions
+colnames(elements)[length(elements)] <- "sum"
+elements <- elements %>% # select species in only 1 bioregion (=elements)
+  filter (`0` != 1) %>% # remove species not found specifically in a bioregion (0)
+  filter (sum == 1) %>% 
+  dplyr::select(-`0`) # remove column which indicates not found specifically in a bioregion
+elements <- elements %>% 
+  mutate_at(vars(2:length(elements)),funs(as.numeric)) # to transform several columns ((2:length(elements)) type to numeric
+# nb_elements <- enframe(colSums(elements[,2:length(elements)])) # nb of strict endemic species per bioregions; enframe: make a tibble from vector
+# nb_elements <- nb_elements[-nrow(nb_elements),] %>%  # remove row "sum"
+#   rename ("bioregion" = name, "elements" = value) %>% 
+#   mutate ("bioregion" = as.numeric(bioregion))
+
+elements_richness <- dataset_bioreg %>% 
+  filter(NameNoAuthors %in% elements$taxa) %>% # all specimens
+  group_by (bioregion) %>%
+  summarise(elem_esp =  n_distinct(NameNoAuthors), elem_spec = n()) # count number of element (strict endemics) species and specimens per bioregion
+st_geometry(elements_richness) <- NULL # remove sf class to join tibbles ci-infra
+
+
+
+## List of the element (strict endemics) of each bioregion
+list_elements <- list()
+for (i in 1:nrow(bioregions_union)){
+selection <- elements %>% 
+  filter (elements[,i+1] == 1)
+list_elements[[i]] <-  selection[,"taxa"]
+}
+
+## Characteristics of element species per bioregion
+elements_bioreg <- list_elements[[1]] # starting of the list of elements with attributed bioregion
+elements_bioreg$bioregion <- rep(1,nrow(list_elements[[1]])) # starting of the list of elements with attributed bioregion
+for (i in 2:length(ids_bioreg)){
+  if(nrow(list_elements[[i]])>0){
+    elements_bioreg<-add_row(elements_bioreg, taxa = pull(list_elements[[i]]), bioregion = rep (i,nrow(list_elements[[i]]))) # list of elements with attributed bioregion
+  }
+}
+elements_bioreg <- elements_bioreg %>% rename (element_taxa = taxa)
+elements_bioreg <- left_join(elements_bioreg, metadata, by = c("element_taxa" = "Name_Initial")) %>% # list of elements with attributed bioregion with metadata
+  dplyr::select(bioregion, element_taxa, FamilyName, Habitus1, Habitus2, Habitus_remark, Habitat, Habitat_code, Present_in_Gabon)
+
+elements_bioreg_charact <- elements_bioreg %>% 
+  group_by(bioregion) %>% 
+  summarise("elem_tree(%)" = round(sum(Habitus1 =="tree")/n()*100,1), "elem_shrub(%)" = round(sum(Habitus1 =="shrub")/n()*100,1), "elem_herb(%)" = round(sum(Habitus1 =="herb")/n()*100,1), "elem_liana(%)" = round(sum(Habitus1 =="liana")/n()*100,1), "elem_habitus_unknown(%)" = round(sum(Habitus1 =="unknown")/n()*100,1))
+
+
+## Synthesis
+bioregion_flora <- left_join(bioregions_union, total_richness, by="bioregion") %>% 
+  left_join(end_richness, by="bioregion") %>% 
+  mutate ("end_esp(%)"= round(end_esp/full_esp*100,1), "end_spec(%)" = round(end_spec/full_spec*100,1)) %>% 
+  left_join(habitat_us, by="bioregion") %>% 
+  left_join(elements_richness, by="bioregion") %>% 
+  mutate (elem_esp = replace_na(elem_esp,0), elem_spec = replace_na(elem_spec,0)) %>% 
+  left_join(elements_bioreg_charact, by="bioregion") %>%
+  as_tibble() %>%  # to remove class sf
+  mutate("No. (%) endemic species" = paste0(end_esp," (",`end_esp(%)`,")")) %>% 
+  dplyr::select("Bioregion" = bioregion, "No. total species" = full_esp, "No. (%) endemic species", "No. elements" = elem_esp)
+
+# write.csv(bioregion_flora, "synthesis_bioregion_flora_test_all.csv")
+
+elements_flora <- elements_bioreg %>% 
+  dplyr::select("Bioregion" = bioregion, "Family" = FamilyName, "Taxon" = element_taxa, "Habit" = Habitus1) %>% 
+  arrange(Bioregion, Family, Taxon)
+  
+# write.csv(elements_flora, "elements_flora_bioregion_test_all.csv")
+
+```
+
+
+```{r map elements of bioregion on the map}
+
+all_elements <- elements_bioreg$element_taxa
+elements_occ <- dataset_sf[dataset_sf$NameNoAuthors %in% all_elements,]
+X = 5 # bioregion number
+choice_elements <- pull(list_elements[[X]])
+elements_X_occ <- dataset_sf[dataset_sf$NameNoAuthors %in% choice_elements,]
+
+ggplot() + # plot bioregions
+  geom_sf(data=clip_bioregions$geometry, aes(fill=as.factor(clip_bioregions$bioregion))) +
+  scale_fill_manual(values = getPalette(colourCount)) +
+  geom_sf_text(data=clip_bioregions$geometry, aes(label = clip_bioregions$bioregion), size=3) +
+  geom_sf(data=elements_occ$geometry) +
+  geom_sf(data=frontier$geometry, color = "black", size = 1, fill = NA) +
+  theme(legend.position="none", axis.title = element_blank(), axis.text = element_blank())
+
+```
+
+
+#### Define borders of bioregions
+
+```{r value of endemicity (rate) per species per bioregion}
+
+## Make a frequence table considering specimens not attributed to a bioregion (completely outside or exactly between two bioregions)
+mat_freq <- matrix(nrow=length(ids_bioreg2), ncol=length(species)) # building matrix abundance
+colnames(mat_freq) <-  c(species)
+rownames(mat_freq) <- c(sort(ids_bioreg2))
+for (i in 0:length(ids_bioreg2)-1){ # compute abundance in the matrix
+  for (j in 1:length(species)){
+    if (any(bioreg_species_elements$bioregion == i & bioreg_species_elements$NameNoAuthors == species[j])){
+      mat_freq[i+1,j] = bioreg_species_elements[which(bioreg_species_elements$bioregion == i & bioreg_species_elements$NameNoAuthors == species[j]),]$n
+    } else {
+      mat_freq[i+1,j] = 0
+    }
+  }
+}
+mat_freq <- as_tibble(mat_freq) # make a tibble of abundance matrix
+
+
+
+## Make a relative frequence table
+mat_relfreq <- tibble()
+for (i in 1:length(ids_bioreg2)){
+  for (j in 1:length(species)){
+    mat_relfreq[i,j] = mat_freq[i,j]/sum(mat_freq[i,]) # calcul relative frequence of presence in a specific bioregion
+  }
+}
+
+
+## Calcul of endemicity rate (or indicative value) for each species per bioregion
+end_rate <- tibble()
+for (i in 1:length(ids_bioreg2)){
+  for (j in 1:length(species)){
+    end_rate[i,j] = mat_relfreq[i,j]/sum(mat_relfreq[,j]) # calcul relative frequence of presence in a specific bioregion
+  }
+}
+end_rate <- end_rate[-1,] # remove first line which corresponds to the "no bioregion" attribution
+  
+
+
+## Specimen dataset with value of endemicity rate per specimen according to bioregions
+dataset_end_rate <- dataset
+for (i in 1:length(ids_bioreg)){
+  for (j in 1:length(species)){
+      dataset_end_rate[which(dataset_end_rate$NameNoAuthors == species[j]),paste("end_rate_bioreg",i,sep="")] <- end_rate[i,j]
+  }
+}
+dataset_end_rate <- dataset_end_rate %>% 
+  filter(!is.na(end_rate_bioreg1)) # remove specimen without end_rate
+
+```
+
+
+
+```{r kriging endemicity rate}
+
+## Transform geographic coordinates with a random adjustement to avoid to have specimens from the exact same coordinates because kriging analysis  tend to remove duplicate specimens from the same spatial point. So allow to consider all the specimens for analysis.
+adjust = 0.01 # maximum value of random adjustement of coordinates in decimal degree (0.01? = 1km is more or less the mean of accuracy of georeferencement for the BDDendemix)
+dataset_end_rate <- dataset_end_rate %>% 
+  mutate (LatitudeDecimal_adjust = LatitudeDecimal + runif(nrow(dataset_end_rate), min = - adjust, max = adjust)) %>%  # add a random value
+  mutate (LongitudeDecimal_adjust = LongitudeDecimal + runif(nrow(dataset_end_rate), min = - adjust, max = adjust)) # add a random value
+
+# dataset_end_rate_sf <- st_as_sf(x = dataset_end_rate, coords = c("LongitudeDecimal_adjust", "LatitudeDecimal"), crs = 4326) # dataset as sf object
+# 
+# ## Transform data to sp compatible data
+# dataset_end_rate_krig <- as_Spatial(dataset_end_rate_sf)
+
+
+## Add data with 0 value of end_rate all over the sea to avoid interpolation of end_rate in the sea
+# Create a sf object of the outside of study area (sea)
+CS=0.1 # size in decimal degree of cell size
+grid_sea <- st_make_grid(studyarea, n=c(diff(st_bbox(studyarea)[c(1, 3)]), diff(st_bbox(studyarea)[c(2, 4)]))/CS, square = TRUE)
+grid_sea <- as_tibble(grid_sea) %>% # integrate numero of cell in grid
+  mutate (NameNoAuthors = "NoData", end_rate_bioreg1 = 0, end_rate_bioreg2 = 0, end_rate_bioreg3 = 0, end_rate_bioreg4 = 0, end_rate_bioreg5 = 0, end_rate_bioreg6 = 0, end_rate_bioreg7 = 0, end_rate_bioreg8 = 0, end_rate_bioreg9 = 0, end_rate_bioreg10 = 0, end_rate_bioreg11 = 0, end_rate_bioreg12 = 0, end_rate_bioreg13 = 0) %>% # end_rate value is O for outside the study area (sea) and the taxa is "NoData"
+  st_as_sf ()
+sea <- st_difference(grid_sea, frontier_sa) # create a layer of sea only by removing all the continental part (frontier_sa) from the grid
+sea$centroids <- st_centroid(sea$geometry) # get centroid of each grid cell
+sea <- sea %>% 
+  tidyr::extract(centroids, c('LongitudeDecimal_adjust', 'LatitudeDecimal_adjust'), '\\((.*), (.*)\\)', remove = TRUE, convert = FALSE) %>%  # transform centroid data into lat/long column
+  mutate(LatitudeDecimal_adjust = as.numeric(LatitudeDecimal_adjust), LongitudeDecimal_adjust = as.numeric(LongitudeDecimal_adjust)) %>% 
+  dplyr::select(-geometry) # remove initial geometry column from the grid
+  
+# Add the o value data from the sea in the dataset to perform kriging
+dataset_end_rate_sea <- bind_rows(dataset_end_rate,sea)
+
+
+## Transform data to sp compatible data
+dataset_end_rate_krig <- SpatialPointsDataFrame(coords = data.frame(lon = dataset_end_rate_sea$LongitudeDecimal_adjust, lat = dataset_end_rate_sea$LatitudeDecimal_adjust), data = dataset_end_rate_sea, proj4string = CRS()) # Need to reproject data (specimens + grid) into a projection system that is not decimal degree lat/lon (epsg=4326) for kriging ; EPSG:5223 is not ideal because it does not include all the study area, especially in the north, despite it is centered on Gabon; but seems accuracy enough for final results
+
+
+## Make a grid for interpolation
+DDspace = 0.1 # space in decimal degree between points to interpolate
+
+min_lon <- dataset_end_rate_krig@bbox[1,1]
+max_lon <- dataset_end_rate_krig@bbox[1,2]
+min_lat <- dataset_end_rate_krig@bbox[2,1]
+max_lat <- dataset_end_rate_krig@bbox[2,2]
+
+Longitude.range <- as.numeric(c(min_lon,max_lon))
+Latitude.range <- as.numeric(c(min_lat,max_lat))
+
+grd <- expand.grid(Longitude = seq(from = Longitude.range[1], to = Longitude.range[2], by = DDspace), 
+                   Latitude = seq(from = Latitude.range[1],to = Latitude.range[2], by = DDspace))  # expand points to grid
+coordinates(grd) <- ~Longitude + Latitude
+gridded(grd) <- TRUE
+proj4string(grd) <- CRS("+init=epsg:5223") # EPSG:5223 is not ideal because it is centered on Gabon but do not include all the study area, especially in the north
+
+
+krige1_1.1 <- autoKrige(formula = end_rate_bioreg1~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige2_1.1 <- autoKrige(formula = end_rate_bioreg2~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige3_1.1 <- autoKrige(formula = end_rate_bioreg3~1, input_data = dataset_end_rate_krig, new_data = grd)
+# krige4_1.1 <- autoKrige(formula = end_rate_bioreg4~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige5_1.1 <- autoKrige(formula = end_rate_bioreg5~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige6_1.1 <- autoKrige(formula = end_rate_bioreg6~1, input_data = dataset_end_rate_krig, new_data = grd)
+# krige7_1.1 <- autoKrige(formula = end_rate_bioreg7~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige8_1.1 <- autoKrige(formula = end_rate_bioreg8~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige9_1.1 <- autoKrige(formula = end_rate_bioreg9~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige10_1.1 <- autoKrige(formula = end_rate_bioreg10~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige11_1.1 <- autoKrige(formula = end_rate_bioreg11~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige12_1.1 <- autoKrige(formula = end_rate_bioreg12~1, input_data = dataset_end_rate_krig, new_data = grd)
+krige13_1.1 <- autoKrige(formula = end_rate_bioreg13~1, input_data = dataset_end_rate_krig, new_data = grd)
+# krige14 <- autoKrige(formula = end_rate_bioreg14~1, input_data = dataset_end_rate_krig, new_data = grd)
+# krige15 <- autoKrige(formula = end_rate_bioreg15~1, input_data = dataset_end_rate_krig, new_data = grd)
+# krige16 <- autoKrige(formula = end_rate_bioreg16~1, input_data = dataset_end_rate_krig, new_data = grd)
+# krige17 <- autoKrige(formula = end_rate_bioreg17~1, input_data = dataset_end_rate_krig, new_data = grd)
+
+# save(krige7_1.1_subset,file="Kriging_objects/krige7_test_1.1")
+
+plot(krige7)
+
+
+image(krige4$krige_output, col=topo.colors(128, alpha=1),asp=1)
+contour(krige4$krige_output, add=TRUE, lwd = 0.2)
+plot(frontier$geometry, lwd=3.5, add=TRUE)
+plot(clip_bioregions$geometry, add=TRUE)
+points(x=dataset_end_rate_krig@coords[,1], y=dataset_end_rate_krig@coords[,2], pch=18, cex=0.5)
+# with(dataset_end_rate_krig@data$end_rate, points(x=dataset_end_rate_krig@coords[,1], y=dataset_end_rate_krig@coords[,2], pch=20))
+
+
+## Subsampling part of bioregion 6 (Monts de Cristal) which have a lot of data in small region, to allow running code of autoKrige (which otherwise do not succeed to calculate (not successful after 10 full days of calculation)) for bioregion 6
+dataset_bioreg_end_rate_sea <- st_intersection(st_as_sf(dataset_end_rate_sea, coords = c("LongitudeDecimal_adjust", "LatitudeDecimal_adjust"), crs = 4326), bioregions_union) # put bioregion number to specimens
+
+# Select the bioregion
+bioregX <- dataset_bioreg_end_rate_sea %>% 
+  filter(bioregion == 4) # select specimens from bioregion X
+# Resampling
+frac = 0.5 # % of selected specimens for resampling
+bioregX_sample <- sample_frac(bioregX, frac) # subsampling of specimens from bioregion X
+# Reconstruct the database with subsampling of bioregion X
+dataset_bioregX_sample_end_rate <- dataset_bioreg_end_rate_sea %>%
+  filter(bioregion != 4) %>% 
+  rbind(bioregX_sample) %>% 
+  tidyr::extract(geometry, c('LongitudeDecimal_adjust', 'LatitudeDecimal_adjust'), '\\((.*), (.*)\\)', remove = FALSE, convert = FALSE) # create lat/long columns from geometry
+dataset_bioregX_sample_end_rate_krig <- SpatialPointsDataFrame(coords = data.frame(lon = as.numeric(dataset_bioregX_sample_end_rate$LongitudeDecimal_adjust), lat = as.numeric(dataset_bioregX_sample_end_rate$LatitudeDecimal_adjust)), data = dataset_bioregX_sample_end_rate, proj4string = CRS("+init=epsg:5223")) # Transform data to sp compatible data
+
+# OR subsampling just in the part of the area of endemism where there are maximum of data
+CS=0.01 # size in decimal degree of cell size
+grid_ssa <- st_make_grid(studyarea, n=c(diff(st_bbox(studyarea)[c(1, 3)]), diff(st_bbox(studyarea)[c(2, 4)]))/CS, square = T)
+grid_ssa <- as_tibble(grid_ssa) %>% # integrate numero of cell in grid
+  mutate (ID_ss_grid = c(1:length(grid_ssa))) %>%
+  st_as_sf ()
+dataset_bioreg_end_rate_sea <- st_intersection(dataset_bioreg_end_rate_sea, grid_ssa)
+nb_spec_ss_grid_sea <- as_tibble(dataset_bioreg_end_rate_sea %>% # count number of endemic specimen per sub-grid (0.01°) cell
+  count(ID_ss_grid))
+MAXspec = 30 # maximum number of specimens within a sub-grid cell to compute resampling
+bioregX <- dataset_bioreg_end_rate_sea %>%
+  filter(ID_ss_grid %in% pull(nb_spec_ss_grid_sea %>% filter(n>MAXspec) %>% dplyr::select(ID_ss_grid))) %>%  # select specimen from cells with a lot of data (more than X in one cell of 1 km²)
+  filter(bioregion == 4) # select specimens from bioregion X
+frac = 0.5 # % of selected specimens for resampling
+bioregX_sample <- sample_frac(bioregX, frac) # subsampling of specimens from bioregion X
+dataset_bioregX_sample_end_rate <- dataset_bioreg_end_rate_sea %>%
+  filter(bioregion != 4 | (bioregion == 4 & ID_ss_grid %in% pull(nb_spec_ss_grid_sea %>% filter(n<MAXspec) %>% dplyr::select(ID_ss_grid)))) %>% 
+  rbind(bioregX_sample) %>% 
+  tidyr::extract(geometry, c('LongitudeDecimal_adjust', 'LatitudeDecimal_adjust'), '\\((.*), (.*)\\)', remove = FALSE, convert = FALSE) # create lat/long columns from geometry
+dataset_bioregX_sample_end_rate_krig <- SpatialPointsDataFrame(coords = data.frame(lon = as.numeric(dataset_bioregX_sample_end_rate$LongitudeDecimal_adjust), lat = as.numeric(dataset_bioregX_sample_end_rate$LatitudeDecimal_adjust)), data = dataset_bioregX_sample_end_rate, proj4string = CRS("+init=epsg:5223")) # Transform data to sp compatible data
+
+krige4_1.1_subset2 <- autoKrige(formula = end_rate_bioreg4~1, input_data = dataset_bioregX_sample_end_rate_krig, new_data = grd)
+
+## Subset kriging with minimum value
+minkrigval <- 0.35 # value of minimum value of end_rate in kriging output
+k1 <- krige1$krige_output[krige1$krige_output@data$var1.pred>minkrigval,]
+k2 <- krige2$krige_output[krige2$krige_output@data$var1.pred>minkrigval,]
+k3 <- krige3$krige_output[krige3$krige_output@data$var1.pred>minkrigval,]
+k4 <- krige4_subset$krige_output[krige4_subset$krige_output@data$var1.pred>minkrigval,]
+k5 <- krige5$krige_output[krige5$krige_output@data$var1.pred>minkrigval,]
+k6 <- krige6$krige_output[krige6$krige_output@data$var1.pred>minkrigval,]
+k7 <- krige7$krige_output[krige7$krige_output@data$var1.pred>minkrigval,]
+k8 <- krige8$krige_output[krige8$krige_output@data$var1.pred>minkrigval,]
+k9 <- krige9$krige_output[krige9$krige_output@data$var1.pred>minkrigval,]
+k10 <- krige10$krige_output[krige10$krige_output@data$var1.pred>minkrigval,]
+k11 <- krige11$krige_output[krige11$krige_output@data$var1.pred>minkrigval,]
+k12 <- krige12$krige_output[krige12$krige_output@data$var1.pred>minkrigval,]
+# k13 <- krige13$krige_output[krige13$krige_output@data$var1.pred>minkrigval,]
+# k14 <- krige14$krige_output[krige14$krige_output@data$var1.pred>minkrigval,]
+# k15 <- krige15$krige_output[krige15$krige_output@data$var1.pred>minkrigval,]
+# k16 <- krige16$krige_output[krige16$krige_output@data$var1.pred>minkrigval,]
+# k17 <- krige17$krige_output[krige17$krige_output@data$var1.pred>minkrigval,]
+
+
+# Gather all kriging subset in one sf tibble
+krige_subset <- bind_rows(as_tibble(k1) %>% mutate(bioreg = 1), as_tibble(k2) %>% mutate(bioreg = 2), as_tibble(k3) %>% mutate(bioreg = 3), as_tibble(k4) %>% mutate(bioreg = 4), as_tibble(k5) %>% mutate(bioreg = 5), as_tibble(k6) %>% mutate(bioreg = 6), as_tibble(k7) %>% mutate(bioreg = 7), as_tibble(k8) %>% mutate(bioreg = 8), as_tibble(k9) %>% mutate(bioreg = 9), as_tibble(k10) %>% mutate(bioreg = 10), as_tibble(k11) %>% mutate(bioreg = 11), as_tibble(k12) %>% mutate(bioreg = 12)) %>%
+  # bind_rows(., as_tibble(k13) %>% mutate(bioreg = 13)) %>% 
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>%
+  st_intersection(., frontier_sa) # remove points outside the study area (e.g. those in the sea)
+  
+
+ggplot() + # plot subset kriging
+  geom_sf(data=krige_subset$geometry, aes(colour=as.factor(krige_subset$bioreg)), size=3) +
+  scale_colour_manual(values = getPalette(colourCount)) +
+  geom_sf(data=clip_bioregions$geometry, fill = NA) +
+  geom_sf_text(data=clip_bioregions$geometry, aes(label = clip_bioregions$bioregion), size=3) +
+  geom_sf(data=frontier$geometry, color = "black", size = 1, fill = NA) +
+  theme(legend.position="none", axis.title = element_blank(), axis.text = element_blank())
+
+```
+
+
+
+```{r define borders of bioregions}
+
+# From kriging results, we define the pixels that have the same value between each bioregions, according to a threshold. That should give us the borders of bioregion and/or an area of transition between bioregion.
+
+# Define for each pixel if the two maximum values of kriging are equal to less than a treshold
+borders <- st_join(as_tibble(krige1$krige_output) %>% mutate(Longitude1 = Longitude, Latitude1 = Latitude) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige1 = var1.pred, Longitude1, Latitude1), as_tibble(krige2$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige2 = var1.pred)) %>% # join krige1 & krige2 by the geometry
+  st_join(., as_tibble(krige3$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige3 = var1.pred)) %>% # join the previous joining (krige1 + krige2) to krige3, and etc.
+  st_join(., as_tibble(krige4_subset$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige4 = var1.pred)) %>% 
+  st_join(., as_tibble(krige5$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige5 = var1.pred)) %>% 
+  st_join(., as_tibble(krige6$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige6 = var1.pred)) %>% 
+  st_join(., as_tibble(krige7$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige7 = var1.pred)) %>% 
+  st_join(., as_tibble(krige8$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige8 = var1.pred)) %>% 
+  st_join(., as_tibble(krige9$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige9 = var1.pred)) %>% 
+  st_join(., as_tibble(krige10$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige10 = var1.pred)) %>% 
+  st_join(., as_tibble(krige11$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige11 = var1.pred)) %>% 
+  st_join(., as_tibble(krige12$krige_output) %>% st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>% dplyr::select(Pred_krige12 = var1.pred)) %>%
+  dplyr::select(-Latitude1,-Longitude1,-geometry,everything()) # to move lat, lon & geometry at the end of the tibble
+st_geometry(borders) <- NULL # remove sf class
+
+maxkrigdiff = 0.11 # treshold to identify pixels (the two with maximum kriging values) with values inferior to this treshold; the value corresponds to the mean of sd values of all kriging
+n = nrow(clip_bioregions)
+
+transition <- borders
+for (i in 1:nrow(borders)){ # define pixels under the treshold
+  transition[i,"pix_transit"] <- case_when((sort(transition[i,1:n] %>% unlist(., use.names=FALSE), decreasing = T)[1] - sort(transition[i,1:n] %>% unlist(., use.names=FALSE), decreasing = T)[2]) < maxkrigdiff ~ 1)
+}
+
+transition_pix <- transition %>% 
+  filter(pix_transit==1) %>%  # select pixels under the treshold
+  st_as_sf(coords = c("Longitude1", "Latitude1"), crs = 4326) %>% 
+  st_intersection(., frontier_sa)
+
+# choice of colors for plotting AoE krigged
+test_all_color_krig <- getPalette(colourCount)[c(2:12)]
+# test_1.1_color_krig <- getPalette(colourCount)[c(1:13)]
+
+# Plot
+ggplot() + # plot transition pixel
+  geom_sf(data=clip_bioregions$geometry, aes(fill=as.factor(clip_bioregions$bioregion)), color ="white") + # only for legend purpose
+  scale_fill_manual(values = getPalette(colourCount)) + # only for legend purpose
+  geom_sf(data=frontier$geometry, fill = "white") + # to hide the first layer (bioregions)
+  geom_sf(data=krige_subset$geometry, aes(colour=as.factor(krige_subset$bioreg)), size=3) +
+  scale_colour_manual(values = test_all_color_krig) +
+  # scale_colour_manual(values = test_1.1_color_krig) +
+  geom_sf(data=transition_pix$geometry, color = "lightgrey", size = 3) +
+  geom_sf(data=clip_bioregions$geometry, color = "#99FFFF", fill = NA, size = 0.75) +
+  geom_sf(data=frontier$geometry, color = "black", size = 0.6, fill = NA) +
+  # geom_sf(data=refuge_Anhuf_all$geometry, colour = "darkgreen", size = 1.25, fill = NA, linetype = "21") +
+  # geom_sf(data=refuge_Anhuf_evergreen$geometry, color = "darkgreen", size = 0.75, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Anhuf_semideciduous$geometry, colour = "#00CC00", size = 1.25, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Anhuf_evergreen$geometry, color = "#00CC00", size = 1.25, fill = NA, linetype = "solid") +
+  geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.25, fill = NA, linetype = "solid") +
+  geom_sf(data=elements_occ$geometry, shape=3, size = 1) +
+  geom_sf_label(data=clip_bioregions$geometry, aes(label = clip_bioregions$bioregion), fill = alpha("white",0.5), size=4, fontface="bold") +
+  theme_bw() + # background white for the plot
+  theme(panel.grid.major = element_blank(), legend.position=c(0.85,0.80), legend.title = element_text(size = 18, face = "bold"), legend.text = element_text(size = 18), axis.title = element_blank(), axis.text = element_text(size = 16, color = "black")) +
+  guides(fill=guide_legend(ncol=2)) +
+  guides(color = FALSE) + # remove legend for astetic color
+  labs(fill = "Bioregions") +
+  annotation_scale(width_hint = 0.2, pad_x = unit(0.1, "cm"), pad_y = unit(4.5, "cm"), height = unit(0.2, "cm"), text_cex = 1) + 
+  annotation_north_arrow(location = "bl", which_north = "true",  height = unit(1.5, "cm"), width = unit(1.5, "cm"), pad_x = unit(0, "cm"), pad_y = unit(5, "cm"), style = north_arrow_fancy_orienteering)
+
+
+# ggsave("AoE_test_all_minkrig0.35_maxkrigdiff0.05_refuge_test.png", width = 11.69, height = 8.27, dpi = 600)
+
+```
+
+
+```{r core of bioregions as grid}
+
+### Define core of bioregions, which are not considered as transiton areas
+
+core_pix <- anti_join(as_tibble(krige_subset %>% dplyr::select(-var1.var, -var1.stdev)), as_tibble(transition_pix %>% dplyr::select(pix_transit,geometry)), by="geometry") %>% # pixels considered as cores (krige_subset) and not as transition (transition_pix)
+  st_as_sf()
+
+plot(core_pix$geometry)
+
+grid_0.1 <- as_tibble(grid_sea) %>% # grid of 0.1° used for kriging
+  dplyr::select(geometry) %>% 
+  mutate (ID_grid_0.1 = c(1:nrow(grid_sea))) %>% 
+  st_as_sf()
+
+core_pix_grid <- st_intersection(core_pix, grid_0.1) # find in which grid cells pixels of cores are
+
+core_grid <- right_join(as_tibble(grid_0.1), as_tibble(core_pix_grid) %>% dplyr::select(-geometry), by="ID_grid_0.1") %>% # filter grid cells which are core of bioregion
+  dplyr::rename(bioreg_core=bioreg) %>% 
+  st_as_sf()
+
+
+ggplot() +
+  geom_sf(data=core_grid$geometry, aes(fill=as.factor(core_grid$bioreg))) +
+  scale_fill_manual(values = test_all_color_krig) +
+  geom_sf(data=transition_pix$geometry, color = "lightgrey", size = 3) +
+  geom_sf(data=clip_bioregions$geometry, color = "white", fill = NA, size = 0.75) +
+  geom_sf(data=refuge_Anhuf_all$geometry, colour = "darkgreen", size = 1.25, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Anhuf_evergreen$geometry, color = "darkgreen", size = 0.75, fill = NA, linetype = "21") +
+  geom_sf(data=refuge_Maley$geometry, color = "red", size = 1.25, fill = NA, linetype = "21") +
+  geom_sf(data=frontier$geometry, color = "black", size = 0.6, fill = NA) +
+  geom_sf(data=elements_occ$geometry, shape=3) +
+  geom_sf_text(data=clip_bioregions$geometry, aes(label = clip_bioregions$bioregion), size=6, fontface="bold") +
+  theme(panel.grid.major = element_blank(), legend.position=c(0.85,0.82), legend.title = element_text(size = 18, face = "bold"), legend.text = element_text(size = 18), axis.title = element_blank(), axis.text = element_text(size = 16, color = "black")) +
+  guides(fill=guide_legend(ncol=2)) +
+  guides(color = FALSE) + # remove legend for astetic color
+  labs(fill = "Bioregions") +
+  annotation_scale(width_hint = 0.2, pad_x = unit(0.1, "cm"), pad_y = unit(4.5, "cm"), height = unit(0.2, "cm"), text_cex = 1) + 
+  annotation_north_arrow(location = "bl", which_north = "true",  height = unit(1.5, "cm"), width = unit(1.5, "cm"), pad_x = unit(0, "cm"), pad_y = unit(5, "cm"), style = north_arrow_fancy_orienteering)
+
+
+```
+
+
+```{r endemics and elements of bioregions in cores}
+
+## Elements
+elements_occ_core <- st_intersection(elements_occ, core_grid) # occurrences of elements of bioregions only in cores of bioregions
+nrow(elements_occ_core)/nrow(elements_occ)*100 # proportion of elements which are located within cores of bioregions
+
+## Endemics
+end_occ_core <- st_intersection(dataset_sf, core_grid) # occurrences of endemics in cores of bioregions
+nrow(end_occ_core)/nrow(dataset_sf)*100 # proportion of endemics which are located within cores of bioregions
+
+
+```
+
+
+```{r Characterisation flora of cores of bioregion}
+
+## Specific richness in cores of bioregion
+total_richness_cores <- st_intersection(RB_sf, core_grid) %>% # attribute cores of bioregion to specimens
+  filter(tax_esp != "###") # remove specimens not identified at species level
+ID_RB_spec_dups_cores <- unique(total_richness_cores$ID_RB_study_area[duplicated(total_richness_cores$ID_RB_study_area)]) # which ID specimens are duplicated by st_intersection (= falling at the border of two different bioregions)
+total_richness_cores <- total_richness_cores[!(total_richness_cores$ID_RB_study_area %in% ID_RB_spec_dups_cores),] # dataset with only specimens falling into specific bioregion (remove those from borders)
+total_richness_cores <- total_richness_cores %>% 
+  group_by (bioreg_core) %>%
+  summarise(full_esp =  n_distinct(tax_tax), full_spec = n()) %>%   # count number of species and specimens per bioregion
+  as_tibble() %>% # remove sf class to join tibbles ci-infra
+  dplyr::select(-geometry)
+
+## Endemics of study area in cores of bioregion
+dataset_sf_cores <- st_intersection(dataset_sf, core_grid) # all occurrences which are in cores of bioregions
+
+end_richness_cores <- dataset_sf_cores %>% 
+  group_by (bioreg_core) %>%
+  summarise(end_esp =  n_distinct(NameNoAuthors), end_spec = n()) %>%  # count number of endemic species and specimens of study area per bioregion
+  as_tibble() %>% # remove sf class to join tibbles ci-infra
+  dplyr::select(-geometry)
+
+
+## Strict endemics (element) richness in cores of bioregion
+dataset_cores <- left_join(dataset, as_tibble(dataset_sf_cores) %>% dplyr::select(ID,bioreg_core), by="ID") # add number of bioregion core to occurrences
+
+mat_presabs_core <- dataset_cores %>% # matrix of abundance
+  group_by(bioreg_core) %>% 
+  count(NameNoAuthors) %>% 
+  reshape::cast(., bioreg_core ~ NameNoAuthors, value='n') %>% # specific function of reshape to calculate abundance within each plot_name
+  mutate_at(vars(-("bioreg_core")),~replace(., !is.na(.), 1)) %>% # transform abundance (e.g. 2, 3 or 4) as presence (=1), except for column bioreg_core
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  remove_rownames(.) %>% 
+  column_to_rownames(., var = "bioreg_core")
+
+elements_cores <- rbind(mat_presabs_core, colSums(mat_presabs_core)) # in how much bioregions a species is found
+elements_cores <- as_tibble(cbind(taxa = names(elements_cores), t(elements_cores))) # flip row/column mat_presabs
+colnames(elements_cores)[length(elements_cores)] <- "sum"
+elements_cores <- elements_cores %>% # select species in only 1 core of bioregion (=elements)
+  filter (`0` != 1) %>% # remove species found outside a core of bioregion (0)
+  filter (sum == 1) %>% 
+  dplyr::select(-`0`) # remove species found outside a core of bioregion (0)
+elements_cores <- elements_cores %>% 
+  mutate_at(vars(2:length(elements_cores)),funs(as.numeric)) # to transform several columns ((2:length(elements)) type to numeric
+
+elements_cores_richness <- dataset_cores %>% 
+  filter(NameNoAuthors %in% elements_cores$taxa) %>% # all specimens
+  group_by (bioreg_core) %>%
+  summarise(elem_esp =  n_distinct(NameNoAuthors), elem_spec = n()) %>%  # count number of element (strict endemics) species and specimens per bioregion
+  as_tibble() # remove sf class to join tibbles ci-infra
+
+
+## List of the element (strict endemics) of each core of bioregion
+list_elements_cores <- list()
+for (i in 1:nrow(elements_cores_richness)){
+selection <- elements_cores %>% 
+  filter (elements_cores[,i+1] == 1)
+list_elements_cores[[i]] <-  selection[,"taxa"]
+}
+
+## Characteristics of element species per core of bioregion
+elements_cores_bioreg <- list_elements_cores[[1]] # starting of the list of elements with attributed bioregion
+elements_cores_bioreg$bioreg_core <- rep(1,nrow(list_elements_cores[[1]])) # starting of the list of elements with attributed bioregion
+for (i in 2:nrow(elements_cores_richness)){
+  if(nrow(list_elements_cores[[i]])>0){
+    elements_cores_bioreg<-add_row(elements_cores_bioreg, taxa = pull(list_elements_cores[[i]]), bioreg_core = rep (i,nrow(list_elements_cores[[i]]))) # list of elements with attributed bioregion
+  }
+}
+elements_cores_bioreg <- elements_cores_bioreg %>% rename (element_taxa = taxa)
+elements_cores_bioreg <- left_join(elements_cores_bioreg, metadata, by = c("element_taxa" = "Name_Initial")) %>% # list of elements with attributed bioregion with metadata
+  dplyr::select(bioreg_core, element_taxa, FamilyName, Habitus1, Habitus2, Habitus_remark, Habitat, Habitat_code, Present_in_Gabon)
+
+
+## Synthesis
+cores_bioregion_flora <- total_richness_cores %>% 
+  left_join(end_richness_cores, by="bioreg_core") %>% 
+  mutate ("end_esp(%)"= round(end_esp/full_esp*100,1), "end_spec(%)" = round(end_spec/full_spec*100,1)) %>% 
+  left_join(elements_cores_richness, by="bioreg_core") %>% 
+  mutate (elem_esp = replace_na(elem_esp,0), elem_spec = replace_na(elem_spec,0)) %>% 
+  mutate("No. (%) endemic species" = paste0(end_esp," (",`end_esp(%)`,")")) %>% 
+  dplyr::select("Core bioregion" = bioreg_core, "No. total species" = full_esp, "No. (%) endemic species", "No. elements" = elem_esp)
+
+# write.csv(cores_bioregion_flora, "synthesis_cores_bioregion_flora_test_all.csv")
+
+elements_cores_flora <- elements_cores_bioreg %>% 
+  arrange(bioreg_core, FamilyName, element_taxa) %>% 
+  dplyr::select("Core bioregion" = bioreg_core, "Family" = FamilyName, "Taxon" = element_taxa, "Habit" = Habitus1)
+  
+  
+# write.csv(elements_cores_flora, "elements_cores_flora_bioregion_test_all.csv")
+
+```
+
+
+```{r environmental characteristics of bioregions & cores}
+
+### Bioregions
+# Area
+bioreg_charac <- clip_bioregions %>% 
+  mutate(area = round(st_area(.)/1000000,0)) # divide by 1000000 to get area from m² to km²
+
+# Altitude
+for (i in 1:nrow(clip_bioregions)){
+  a <- st_crop (st_as_stars(srtm), clip_bioregions[i,])
+  bioreg_charac[i,"alt_mean"] <- round(mean(a$mn75_studyare, na.rm=T),0)
+  bioreg_charac[i,"alt_sd"] <- round(sd(a$mn75_studyare, na.rm=T),0)
+}
+
+
+### Cores of bioregions
+# Area
+core_union <- core_grid %>% 
+  group_by(bioreg_core) %>% 
+  summarise() %>%
+  st_as_sf()
+core_charac <- core_union %>% 
+  mutate(area = round(st_area(.)/1000000,0))
+
+# Altitude
+for (i in 1:nrow(core_union)){
+  a <- st_crop (st_as_stars(srtm), core_union[i,])
+  core_charac[i,"alt_mean"] <- round(mean(a$mn75_studyare, na.rm=T),0)
+  core_charac[i,"alt_sd"] <- round(sd(a$mn75_studyare, na.rm=T),0)
+}
+
+```
+
+
+#### Relationship between bioregions
+
+```{r clustering bioregions}
+
+## Perform the similarity matrix analysis
+mat_dist_presabs <- dist.binary(mat_presabs, method = 5, diag = FALSE, upper = FALSE) # method 5 is Sorensen index ; returns a distance matrix of class dist between the rows of the data frame
+
+clust_presabs <- hclust(mat_dist_presabs,"ward.D") # clustering the distance matrix
+
+ggdendrogram(clust_presabs, rotate= TRUE) + # plot dendrogram
+  theme(legend.position="none", axis.title = element_blank(), axis.text = element_text(size = 18, color = "black"))
+
+# ggsave("Dendrogram_presabs_test_1.1.png", width = 11.69, height = 8.27, dpi = 300)
+
+
+#### Abundance matrix
+mat_abund <- mat_freq[-1,]
+mat_dist_abund <- vegdist(mat_abund, method = "bray") # bray-curtis method
+
+clust_abund <- hclust(mat_dist_abund, method = "ward.D2") # ward method
+# clust_abund <- hclust(mat_dist_abund, method = "average") # UPGMA method
+
+# ggsave("Dendrogram_abund_AoE_test_all.png", width = 11.69, height = 8.27, dpi = 600)
+
+# Plot
+png("Dendrogram_abund_AoE_test_all.png", width=1200, height=700) # function to save the plot as a png
+as.dendrogram(clust_abund) %>% 
+  set("branches_lwd", 1.75) %>% # line width of branches
+  set("leaves_pch", 19) %>% # node point type
+  set("leaves_cex", 7) %>% # node point size
+  set("leaves_col", rev(getPalette(colourCount)[order(as.numeric(as.vector(arrange(as_tibble(dendro_data(as.dendrogram(clust_abund), type = "rectangle")$labels), desc(x))$label)))])) %>% # order colours of point according to order of areas of endemism in the dendrogram
+  set("labels_cex", 3) %>% 
+  dendextend::rotate(as.character(colourCount:1)) %>% # arrange the dendrogram from the lowest value to greatest as much as possible
+  plot(horiz = TRUE, xaxt='n', dLeaf = -0.008) # dLeaf handle the distance between the tip of a leaf and its label
+dev.off() # Necessary to finalize the saving of the plot
+
+
+
+#### Abundance matrix based on presence in cores of bioregions
+dataset_sf_cores <- st_intersection(dataset_sf,core_grid) # all occurrences which are in cores of bioregions
+dataset_cores <- left_join(dataset, as_tibble(dataset_sf_cores) %>% dplyr::select(ID,bioreg_core), by="ID") # add number of bioregion core to occurrences
+
+mat_abund_core <- dataset_cores %>% # matrix of abundance
+  group_by(bioreg_core) %>% 
+  count(NameNoAuthors) %>% 
+  reshape::cast(., bioreg_core ~ NameNoAuthors, value='n') %>% # specific function of reshape to calculate abundance within each plot_name
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  remove_rownames(.) %>% 
+  column_to_rownames(., var = "bioreg_core")
+mat_abund_core <- mat_abund_core[row.names(mat_abund_core)>0,] # remove the row which has the name 0 and which corresponds to the abundance of species within area outside cores. We don't want to use this data in the clustering
+
+mat_dist_abund_core <- vegdist(mat_abund_core, method = "bray") # bray-curtis method
+
+clust_abund_core <- hclust(mat_dist_abund_core, method = "ward.D2") # ward method
+
+# Plot
+png("Dendrogram_abund_AoE_test_all_core.png", width=1200, height=700) # function to save the plot as a png
+as.dendrogram(clust_abund_core) %>% 
+  set("branches_lwd", 1.75) %>% # line width of branches
+  set("leaves_pch", 19) %>% # node point type
+  set("leaves_cex", 7) %>% # node point size
+  # set("leaves_col", rev(test_all_color_krig[order(as.numeric(as.vector(arrange(as_tibble(dendro_data(as.dendrogram(clust_abund_core), type = "rectangle")$labels), desc(x))$label)))])) %>% # order colours of point according to order of areas of endemism in the dendrogram
+  set("leaves_col", c("#D26D7A", "#DD87B4", "#999999", "#66628D", "#419486", "#F6EF32", "#B6742A", "#91569A", "#FFAD12", "#5A9D5A", "#D96D3B")) %>% # if don't manage to do it automatically
+  set("labels_cex", 3) %>% 
+  dendextend::rotate(as.character(colourCount:2)) %>% # arrange the dendrogram from the lowest value to greatest as much as possible; it is from 2 to 12 because bioregion 1 does not have a core of bioregion
+  plot(horiz = TRUE, xaxt='n', dLeaf = -0.008)
+dev.off() # Necessary to finalize the saving of the plot
+
+
+```
+
+
+```{r ordination NMDS}
+
+## Prepare matrix of abundance
+# mat_abund <- matrix(nrow=length(ids_bioreg), ncol=length(species)) # building matrix of abundance
+# colnames(mat_abund) <-  c(species)
+# mat_abund <- as_tibble(mat_abund)
+# 
+# abundance <- bioreg_species
+# abundance$geometry <- NULL
+# 
+# for (i in 1:length(ids_bioreg)){ # compute presence/absence in the matrix
+#   for (j in 1:length(species)){
+#     if (any(abundance$bioregion == i & abundance$NameNoAuthors == species[j])){
+#       mat_abund[i,j] = abundance[(abundance$bioregion == i & abundance$NameNoAuthors == species[j]),"n"]
+#     } else{
+#      mat_abund[i,j] = 0
+#     }
+#   }
+# }
+
+mat_abund <- mat_freq[-1,]
+
+## NMDS test
+nmdsbray<-metaMDS(mat_abund,dist="bray",k=2,binary=T)
+# a<-metaMDSdist(mat_abund,distance="bray",autotransform =F) # distance matrix used in NMDS
+
+# see stress value and meaning in https://jonlefcheck.net/2012/10/24/nmds-tutorial-in-r/
+stressplot(nmdsbray)
+
+# Plot
+data.scores <- as.data.frame(scores(nmdsbray))  #Using the scores function from vegan to extract the site scores and convert to a data.frame
+data.scores$site <- rownames(data.scores)  # create a column of site names, from the rownames of data.scores
+colourCount = length(unique(data.scores$site))
+
+data.scores$site <- factor (data.scores$site, levels=c(1:nrow(data.scores))) # obliger de mettre cette donnee en facteur pour que ggplot prenne en compte cet ordre de donnees pour ploter
+ggplot() + 
+  geom_point(data=data.scores,aes(x=NMDS1,y=NMDS2,colour=site), size=14) + # add the point markers
+  geom_text_repel(data=data.scores,aes(x=NMDS1,y=NMDS2,label=site), size=10, hjust=-1.5) +
+  scale_colour_manual(values = getPalette(colourCount)) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text = element_text(size = 15), axis.title = element_text(size = 18), legend.position="bottom", legend.title = element_text(size = 20, face="bold"), legend.text = element_text(size = 20)) +
+  guides(colour=guide_legend(nrow=2)) +
+  labs(colour = "Bioregions")
+
+# ggsave("NMDS_1-3_test_all.png", width = 11.69, height = 8.27, dpi = 600)
+
+a<-ordiplot(ord=nmdsbray,type="points")
+ordicluster(ord=nmdsbray, cluster=clust_abund)
+
+# Plot in 3D
+# Dynamic
+ordirgl(nmdsbray, display = "sites", choices = 1:3, type = "t", ax.col = "red")
+# Static
+pl <- ordiplot3d(nmdsbray, display = "sites", choices = 1:3, ax.col = "red")
+points(pl, "sites", pch=16, col=getPalette(colourCount), cex = 3)
+text(pl, "sites", col="black", pos=1, cex = 1.5)
+
+
+## NMDS test on abudance in cores of bioregions
+nmdsbray<-metaMDS(mat_abund_core,dist="bray",k=2,binary=T)
+a<-metaMDSdist(mat_abund_core,distance="bray",autotransform =T)
+
+# see stress value and meaning in https://jonlefcheck.net/2012/10/24/nmds-tutorial-in-r/
+stressplot(nmdsbray)
+
+# Plot
+data.scores <- as.data.frame(scores(nmdsbray))  #Using the scores function from vegan to extract the site scores and convert to a data.frame
+data.scores$site <- rownames(data.scores)  # create a column of site names, from the rownames of data.scores
+
+data.scores$site <- factor (data.scores$site, levels=c(min(as.numeric(data.scores$site)):max(as.numeric(data.scores$site)))) # obliger de mettre cette donnee en facteur pour que ggplot prenne en compte cet ordre de donnees pour ploter
+ggplot() + 
+  geom_point(data=data.scores,aes(x=NMDS1,y=NMDS2,colour=site), size=14) + # add the point markers
+  geom_text_repel(data=data.scores,aes(x=NMDS1,y=NMDS2,label=site), size=10, hjust=-1.5) +
+  scale_colour_manual(values = test_all_color_krig) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text = element_text(size = 15), axis.title = element_text(size = 18), legend.position="bottom", legend.title = element_text(size = 20, face="bold"), legend.text = element_text(size = 20)) +
+  guides(colour=guide_legend(nrow=2)) +
+  labs(colour = "Bioregions")
+
+# ggsave("NMDS_1-2_test_all_core.png", width = 11.69, height = 8.27, dpi = 600)
+
+```
+
+
+
+```{r shared species btw bioregions}
+
+# define combinations of distribution of species within bioregions
+temp <- mat_presabs %>% 
+  mutate_all(as.character)
+pres_species_bioreg <- mat_presabs %>% 
+  mutate_all(as.character)
+for (i in 1:length(temp)){
+pres_species_bioreg[nrow(mat_presabs)+1,i] <- paste0(pull(temp[i]),collapse="")
+}
+
+# define and count unique combinations
+share_species_combi <- as_tibble(cbind(taxa = names(pres_species_bioreg), t(pres_species_bioreg)))
+colnames(share_species_combi)[length(share_species_combi)] <- "combi"
+share_species_combi <- share_species_combi %>% 
+  count(combi) %>%
+  rename("nb_occurences" = n) %>% 
+  #filter (str_count(combi,"1")>1) %>% # count number of 1 in combinations and remove those with less than 2 (= species absent from bioregions or endemic to 1 bioregion)
+  arrange(-nb_occurences) %>% 
+  mutate("nb_bioregion" = str_count(combi,"1")) %>% 
+  mutate("bioregions_list" = lapply(strsplit(combi, ''), function(x) which(x == '1')))   # define which bioregions are linked in each combinations
+for (i in 1:nrow(share_species_combi)){
+  share_species_combi[i,"bioregions"] <- paste(unlist(share_species_combi[i,"bioregions_list"]),collapse=";")
+} # change lists column to a single vector column
+share_species_combi <- share_species_combi %>% dplyr::select(-bioregions_list) # results are wrong for (only) the number of species endemic to 1 bioregion because that does not consider the records outside the identified bioregions, so results are a bit overestimated for that
+
+share_species <- share_species_combi %>% # Only results for species shared between different bioregions
+  filter(nb_bioregion>1) %>% 
+  select("Bioregions" = bioregions, "Number of shared taxa" = nb_occurences)
+
+# write.csv (share_species, "Shared_species_bioreg_test_all.csv")
+
+```
+
+
+```{r shared species btw cores of bioregion}
+
+# define combinations of distribution of species within bioregions
+temp <- mat_presabs_core %>% 
+  slice(-nrow(mat_presabs_core)) %>% # remove last row of the tibble which correspond to presence outside cores of bioregion
+  mutate_all(as.character)
+pres_species_core_bioreg <- mat_presabs_core %>% 
+  slice(-nrow(mat_presabs_core)) %>% # remove last row of the tibble which correspond to presence outside cores of bioregion
+  mutate_all(as.character)
+for (i in 1:length(temp)){
+pres_species_core_bioreg[nrow(temp)+1,i] <- paste0(pull(temp[i]),collapse="")
+}
+
+# define and count unique combinations
+share_species_core_combi <- as_tibble(cbind(taxa = names(pres_species_core_bioreg), t(pres_species_core_bioreg)))
+colnames(share_species_core_combi)[length(share_species_core_combi)] <- "combi"
+share_species_core_combi <- share_species_core_combi %>% 
+  count(combi) %>%
+  rename("nb_occurences" = n) %>% 
+  #filter (str_count(combi,"1")>1) %>% # count number of 1 in combinations and remove those with less than 2 (= species absent from bioregions or endemic to 1 bioregion)
+  arrange(-nb_occurences) %>% 
+  mutate("nb_bioregion" = str_count(combi,"1")) %>% 
+  mutate("bioregions_list" = lapply(strsplit(combi, ''), function(x) which(x == '1')))   # define which bioregions are linked in each combinations
+for (i in 1:nrow(share_species_core_combi)){
+  share_species_core_combi[i,"bioregions"] <- paste(unlist(share_species_core_combi[i,"bioregions_list"])+1,collapse=";")
+} # change lists column to a single vector column ; +1 is used because there is no core for bioregion "1" so the first number corresponds to core of bioregion 2
+share_species_core_combi <- share_species_core_combi %>% dplyr::select(-bioregions_list) # results are wrong for (only) the number of species endemic to 1 bioregion because that does not consider the records outside the identified bioregions, so results are a bit overestimated for that
+
+share_core_species <- share_species_core_combi %>% # Only results for species shared between different cores of bioregion
+  filter(nb_bioregion>1) %>% 
+  select("Cores of bioregions" = bioregions, "Number of shared taxa" = nb_occurences)
+
+# write.csv (share_core_species, "Shared_species_core_bioreg_test_all.csv")
+
+```
